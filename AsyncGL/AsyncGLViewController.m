@@ -57,12 +57,14 @@
 {
 #if TARGET_OS_IOS
     if (_displayLink) {
-        [_displayLink removeFromRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
+        [_displayLink invalidate];
         _displayLink = nil;
     }
 #else
-    CVDisplayLinkStop(_displayLink);
-    CVDisplayLinkRelease(_displayLink);
+    if (_displayLink) {
+        CVDisplayLinkStop(_displayLink);
+        CVDisplayLinkRelease(_displayLink);
+    }
 #endif
 
     AsyncGLView *glView = _glView;
@@ -129,9 +131,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     void *displayLinkContext)
 {
     AsyncGLViewController *vc = (__bridge AsyncGLViewController *)displayLinkContext;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [vc requestRender];
-    });
+    [vc requestRender];
     return kCVReturnSuccess;
 }
 #endif
@@ -143,9 +143,10 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     _paused = paused;
 
 #if TARGET_OS_IOS
-    _displayLink.paused = paused;
+    [_displayLink setPaused:paused];
 #else
-    paused ? CVDisplayLinkStop(_displayLink) : CVDisplayLinkStart(_displayLink);
+    if (_displayLink)
+        paused ? CVDisplayLinkStop(_displayLink) : CVDisplayLinkStart(_displayLink);
 #endif
     if ([self isReady])
         paused ? [_glView pause] : [_glView resume];

@@ -19,6 +19,10 @@ NS_ASSUME_NONNULL_BEGIN
 @interface AsyncGLView : NSView
 #endif
 
+#if TARGET_OS_OSX
+@property (nonatomic) CGFloat contentScaleFactor;
+#endif
+
 @property (nonatomic, readonly) dispatch_queue_t renderQueue;
 
 @end

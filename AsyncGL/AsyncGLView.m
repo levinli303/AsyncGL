@@ -16,7 +16,7 @@
 #define GL_EXT_texture_border_clamp 0
 #define GL_EXT_separate_shader_objects 0
 #if TARGET_OS_OSX
-@import QuartzCore.CAMetalLayer
+@import QuartzCore.CAMetalLayer;
 #endif
 #include "GLES2/gl2.h"
 #include "GLES2/gl2ext.h"
@@ -170,10 +170,10 @@ typedef enum EGLRenderingAPI : int
 #else
 @property (nonatomic) CVDisplayLinkRef viewStateChecker;
 #endif
-@property (nonatomic) CGSize drawableSize;
+@property (nonatomic) BOOL canRender;
+@property (atomic) CGSize drawableSize;
 @property (atomic) BOOL isUpdatingSize;
 @property (atomic, getter=isPaused) BOOL paused;
-@property (atomic) BOOL canRender;
 @property (atomic) BOOL shouldRender;
 @end
 
@@ -227,28 +227,6 @@ typedef enum EGLRenderingAPI : int
     return self;
 }
 
-#if TARGET_OS_IOS
-- (void)willMoveToWindow:(UIWindow *)newWindow
-{
-    [super willMoveToWindow:newWindow];
-
-    if (newWindow && !_contextsCreated) {
-        _contextsCreated = YES;
-        [self createContexts];
-    }
-}
-#else
-- (void)viewWillMoveToWindow:(NSWindow *)newWindow
-{
-    [super viewWillMoveToWindow:newWindow];
-
-    if (newWindow && !_contextsCreated) {
-        _contextsCreated = YES;
-        [self createContexts];
-    }
-}
-#endif
-
 - (void)pause
 {
     [self setPaused:YES];
@@ -264,15 +242,13 @@ typedef enum EGLRenderingAPI : int
         [self makeRenderContextCurrent];
         [self flush];
     });
-
-    [self pauseViewStateChecker];
 }
 
 - (void)resume
 {
-    _paused = NO;
+    [self setPaused:NO];
 
-    [self resumeViewStateChecker];
+    [self _checkViewState];
 }
 
 #pragma mark - properties
@@ -315,10 +291,11 @@ typedef enum EGLRenderingAPI : int
 
 - (void)render
 {
-    if (![self shouldRender] || [self isUpdatingSize]) return;
+    if ([self isPaused] || ![self shouldRender] || [self isUpdatingSize]) return;
 
-    CGFloat width = _drawableSize.width;
-    CGFloat height = _drawableSize.height;
+    CGSize size = [self drawableSize];
+    CGFloat width = size.width;
+    CGFloat height = size.height;
 
     [self makeRenderContextCurrent];
     [self _drawGL:CGSizeMake(width, height)];
@@ -335,26 +312,12 @@ typedef enum EGLRenderingAPI : int
 #endif
 }
 
-#if TARGET_OS_OSX
-static CVReturn displayCallback(CVDisplayLinkRef displayLink,
-    const CVTimeStamp *inNow, const CVTimeStamp *inOutputTime,
-    CVOptionFlags flagsIn, CVOptionFlags *flagsOut,
-    void *displayLinkContext)
-{
-    AsyncGLView *view = (__bridge AsyncGLView *)displayLinkContext;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [view checkViewState];
-    });
-    return kCVReturnSuccess;
-}
-#endif
-
 #pragma mark - private methods
 - (void)commonSetup
 {
     _drawableSize = CGSizeZero;
     _paused = YES;
-    _canRender = YES;
+    _canRender = NO;
     _shouldRender = NO;
     _contextsCreated = NO;
     _msaaEnabled = NO;
@@ -395,13 +358,6 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 #if TARGET_OS_OSX
     _glLayer = (PassthroughGLLayer *)self.layer;
 #endif
-#endif
-
-#if TARGET_OS_IOS
-    _viewStateChecker = [CADisplayLink displayLinkWithTarget:self selector:@selector(checkViewState)];
-#else
-    CVDisplayLinkCreateWithActiveCGDisplays(&_viewStateChecker);
-    CVDisplayLinkSetOutputCallback(_viewStateChecker, displayCallback, (__bridge void *)(self));
 #endif
 }
 
@@ -482,7 +438,6 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 #if TARGET_OS_IOS
     _mainContext = [[EAGLContext alloc] initWithAPI:_api];
     if (_mainContext == nil) {
-        [self setCanRender:NO];
         return;
     }
     dispatch_async(_renderQueue, ^{
@@ -494,14 +449,12 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     };
     NSOpenGLPixelFormat *pixelFormat = [[NSOpenGLPixelFormat alloc] initWithAttributes:attr];
     if (!pixelFormat) {
-        [self setCanRender:NO];
         return;
     }
     _mainContext = [[NSOpenGLContext alloc] initWithFormat:pixelFormat shareContext:nil];
     _glLayer.pixelFormat = pixelFormat;
     _glLayer.renderContext = _mainContext;
     if (!_mainContext) {
-        [self setCanRender:NO];
         return;
     }
     dispatch_async(_renderQueue, ^{
@@ -517,13 +470,11 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     EGLAttrib displayAttribs[] = { EGL_NONE };
     _display = eglGetPlatformDisplay(EGL_PLATFORM_ANGLE_ANGLE, NULL, displayAttribs);
     if (_display == EGL_NO_DISPLAY) {
-        [self setCanRender:NO];
         NSLog(@"eglGetPlatformDisplay() returned error %d", eglGetError());
         return;
     }
 
     if (!eglInitialize(_display, NULL, NULL)) {
-        [self setCanRender:NO];
         NSLog(@"eglInitialize() returned error %d", eglGetError());
         return;
     }
@@ -533,38 +484,36 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     _renderContext = [self createEGLContextWithDisplay:_display api:_api sharedContext:EGL_NO_CONTEXT config:&_renderConfig depthSize:24 msaa:_msaaEnabled];
 
     if (_renderContext == EGL_NO_CONTEXT) {
-        [self setCanRender:NO];
         return;
     }
 
     _renderSurface = eglCreateWindowSurface(_display, _renderConfig, (__bridge EGLNativeWindowType)(_metalLayer), NULL);
 
     if (_renderSurface == EGL_NO_SURFACE) {
-        [self setCanRender:NO];
         NSLog(@"eglCreateWindowSurface() returned error %d", eglGetError());
         return;
     }
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        CGRect rect = self.frame;
-        [self resumeViewStateChecker];
-        self.paused = NO;
-        dispatch_async(self.renderQueue, ^{
-            [self makeRenderContextCurrent];
-            [self setupGL:rect.size];
-        });
+    __block CGSize size;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        size = self.frame.size;
     });
+    [self makeRenderContextCurrent];
+    [self setupGL:size];
 #else
 #if TARGET_OS_IOS
     _renderContext = [[EAGLContext alloc] initWithAPI:_mainContext.API sharegroup:_mainContext.sharegroup];
     if (_renderContext == nil) {
-        [self setCanRender:NO];
         return;
     }
-    dispatch_async(dispatch_get_main_queue(), ^{
-        CGRect rect = self.frame;
-        [self createBuffers:rect.size];
+    __block CGSize size;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        size = self.frame.size;
+        [self makeMainContextCurrent];
+        [self createMainBuffers:size];
     });
+    [self makeRenderContextCurrent];
+    [self createRenderBuffers:size];
 #else
     const NSOpenGLPixelFormatAttribute attr[] = {
         NSOpenGLPFADepthSize, 32,
@@ -578,25 +527,21 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     };
     NSOpenGLPixelFormat *pixelFormat = [[NSOpenGLPixelFormat alloc] initWithAttributes:_msaaEnabled ? msaaAttr : attr];
     if (!pixelFormat) {
-        [self setCanRender:NO];
         return;
     }
     _renderContext = [[NSOpenGLContext alloc] initWithFormat:pixelFormat shareContext:_mainContext];
     if (!_renderContext) {
-        [self setCanRender:NO];
         return;
     }
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        CGRect rect = self.frame;
-        [self resumeViewStateChecker];
-        self.paused = NO;
-        dispatch_async(self.renderQueue, ^{
-            [self makeRenderContextCurrent];
-            if (![self setupShaders]) return;
-            [self createRenderBuffers:rect.size];
-        });
+    [self makeRenderContextCurrent];
+    if (![self setupShaders]) return;
+
+    __block CGSize size;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        size = self.frame.size;
     });
+    [self createRenderBuffers:size];
 #endif
 #endif
 }
@@ -724,20 +669,12 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
 #pragma mark - buffer creation
 #if TARGET_OS_IOS
-- (void)createBuffers:(CGSize)size
+- (void)createMainBuffers:(CGSize)size
 {
-    [self makeMainContextCurrent];
-
     glGenRenderbuffers(1, &_renderbuffer);
     glBindRenderbuffer(GL_RENDERBUFFER, _renderbuffer);
-
-    [self resumeViewStateChecker];
-    self.paused = NO;
-
-    dispatch_async(_renderQueue, ^{
-        [self makeRenderContextCurrent];
-        [self createRenderBuffers:size];
-    });
+    [_mainContext renderbufferStorage:GL_RENDERBUFFER fromDrawable:(CAEAGLLayer *)self.layer];
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, _renderbuffer);
 }
 #endif
 
@@ -762,7 +699,6 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
         GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
             NSLog(@"framebuffer not complete %d", status);
-            [self setCanRender:NO];
             return;
         }
 
@@ -780,7 +716,6 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (status != GL_FRAMEBUFFER_COMPLETE) {
         NSLog(@"framebuffer not complete %d", status);
-        [self setCanRender:NO];
         return;
     }
 
@@ -855,6 +790,13 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 {
     if ([_delegate respondsToSelector:@selector(_prepareGL:)])
         [_delegate _prepareGL:size];
+
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        [self setPaused:NO];
+        [self setCanRender:YES];
+        [self _startObservingViewStateNotifications];
+        [self _checkViewState];
+    });
 }
 
 - (void)_drawGL:(CGSize)size
@@ -947,13 +889,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
 - (void)destroyMain
 {
-    [self pauseViewStateChecker];
-#if TARGET_OS_OSX
-    CVDisplayLinkRelease(_viewStateChecker);
-    _viewStateChecker = NULL;
-#else
-    _viewStateChecker = nil;
-#endif
+    [self _stopObservingViewStateNotifications];
 #ifndef USE_EGL
 #if TARGET_OS_IOS
     [self makeMainContextCurrent];
@@ -999,32 +935,39 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 }
 
 #pragma mark - view checker
-- (void)resumeViewStateChecker
+- (void)_startObservingViewStateNotifications
 {
-#if TARGET_OS_IOS
-    [_viewStateChecker addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+#if TARGET_OS_OSX
+    [center addObserver:self selector:@selector(_checkViewState) name:NSViewFrameDidChangeNotification object:self];
+    [center addObserver:self selector:@selector(_handleWindowOcclusionStateChanged:) name:NSWindowDidChangeOcclusionStateNotification object:nil];
 #else
-    CVDisplayLinkStart(_viewStateChecker);
-#endif
-    [self checkViewState];
-}
-
-- (void)pauseViewStateChecker
-{
-#if TARGET_OS_IOS
-    [_viewStateChecker removeFromRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
-#else
-    CVDisplayLinkStop(_viewStateChecker);
+    [center addObserver:self selector:@selector(_checkViewState) name:UIApplicationWillEnterForegroundNotification object:nil];
+    [center addObserver:self selector:@selector(_checkViewState) name:UIApplicationDidEnterBackgroundNotification object:nil];
 #endif
 }
 
-- (void)checkViewState
+- (void)_stopObservingViewStateNotifications
 {
-    BOOL shouldRender = ![self isPaused] && [self canRender] && self.frame.size.width > 0.0f && self.frame.size.height > 0.0f && !self.isHidden && self.superview;
-#if TARGET_OS_IOS
-    shouldRender = shouldRender && ([UIApplication sharedApplication].applicationState != UIApplicationStateBackground);
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+#if TARGET_OS_OSX
+    [center removeObserver:self name:NSViewFrameDidChangeNotification object:self];
+    [center removeObserver:self name:NSWindowDidChangeOcclusionStateNotification object:self];
 #else
-    shouldRender = shouldRender && ![NSApplication sharedApplication].isHidden;
+    [center removeObserver:self name:UIApplicationWillEnterForegroundNotification object:nil];
+    [center removeObserver:self name:UIApplicationDidEnterBackgroundNotification object:nil];
+#endif
+}
+
+- (void)_checkViewState
+{
+    if ([self isPaused] || ![self canRender]) return;
+
+    BOOL shouldRender = self.frame.size.width > 0.0f && self.frame.size.height > 0.0f && !self.isHidden && self.window;
+#if TARGET_OS_IOS
+    shouldRender = shouldRender && ([[UIApplication sharedApplication] applicationState] != UIApplicationStateBackground);
+#else
+    shouldRender = shouldRender && ([[self window] occlusionState] & NSWindowOcclusionStateVisible);
 #endif
     [self setShouldRender:shouldRender];
 
@@ -1032,7 +975,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
     CGSize newSize = CGSizeMake(self.frame.size.width * scale, self.frame.size.height * scale);
 
-    if (!CGSizeEqualToSize(_drawableSize, newSize))
+    if (!CGSizeEqualToSize([self drawableSize], newSize))
     {
         [self setIsUpdatingSize:YES];
         _isUpdatingSize = YES;
@@ -1043,9 +986,70 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
         [_mainContext renderbufferStorage:GL_RENDERBUFFER fromDrawable:(CAEAGLLayer *)self.layer];
 #endif
 #endif
-        _drawableSize = newSize;
+        [self setDrawableSize:newSize];
         [self setIsUpdatingSize:NO];
     }
 }
+
+#if TARGET_OS_IOS
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+
+    [self _checkViewState];
+}
+#endif
+
+- (void)setContentScaleFactor:(CGFloat)contentScaleFactor
+{
+#if TARGET_OS_OSX
+    self.layer.contentsScale = contentScaleFactor;
+#else
+    [super setContentScaleFactor:contentScaleFactor];
+#endif
+
+    [self _checkViewState];
+}
+
+#if TARGET_OS_OSX
+- (void)_handleWindowOcclusionStateChanged:(NSNotification *)notification
+{
+    if ([notification object] != [self window]) return;
+
+    [self _checkViewState];
+}
+#endif
+
+- (void)setHidden:(BOOL)hidden
+{
+    [super setHidden:hidden];
+
+    [self _checkViewState];
+}
+
+#if TARGET_OS_IOS
+- (void)willMoveToWindow:(UIWindow *)newWindow
+{
+    [super willMoveToWindow:newWindow];
+    if (newWindow && !_contextsCreated) {
+        _contextsCreated = YES;
+        [self createContexts];
+    }
+
+    [self _checkViewState];
+}
+#else
+- (void)viewWillMoveToWindow:(NSWindow *)newWindow
+{
+    [super viewWillMoveToWindow:newWindow];
+
+    if (newWindow && !_contextsCreated) {
+        _contextsCreated = YES;
+        [self createContexts];
+    }
+
+    [self _checkViewState];
+}
+#endif
 
 @end
