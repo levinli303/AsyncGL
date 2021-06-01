@@ -76,6 +76,7 @@ typedef enum EGLRenderingAPI : int
 
 - (void)drawInCGLContext:(CGLContextObj)ctx pixelFormat:(CGLPixelFormatObj)pf forLayerTime:(CFTimeInterval)t displayTime:(const CVTimeStamp *)ts
 {
+    CGLSetCurrentContext(ctx);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
@@ -510,7 +511,7 @@ typedef enum EGLRenderingAPI : int
     dispatch_sync(dispatch_get_main_queue(), ^{
         size = self.frame.size;
         [self makeMainContextCurrent];
-        [self createMainBuffers:size];
+        [self createMainBuffers];
     });
     [self makeRenderContextCurrent];
     [self createRenderBuffers:size];
@@ -521,19 +522,24 @@ typedef enum EGLRenderingAPI : int
     };
     const NSOpenGLPixelFormatAttribute msaaAttr[] = {
         NSOpenGLPFADepthSize, 32,
+        NSOpenGLPFAMultisample,
         NSOpenGLPFASampleBuffers, 1,
         NSOpenGLPFASamples, 4,
         0
     };
     NSOpenGLPixelFormat *pixelFormat = [[NSOpenGLPixelFormat alloc] initWithAttributes:_msaaEnabled ? msaaAttr : attr];
     if (!pixelFormat) {
-        return;
+        if (_msaaEnabled) {
+            // Fallback to non-MSAA
+            pixelFormat = [[NSOpenGLPixelFormat alloc] initWithAttributes:attr];
+        }
+        if (!pixelFormat)
+            return;
     }
     _renderContext = [[NSOpenGLContext alloc] initWithFormat:pixelFormat shareContext:_mainContext];
     if (!_renderContext) {
         return;
     }
-
     [self makeRenderContextCurrent];
     if (![self setupShaders]) return;
 
@@ -669,12 +675,11 @@ typedef enum EGLRenderingAPI : int
 
 #pragma mark - buffer creation
 #if TARGET_OS_IOS
-- (void)createMainBuffers:(CGSize)size
+- (void)createMainBuffers
 {
     glGenRenderbuffers(1, &_renderbuffer);
     glBindRenderbuffer(GL_RENDERBUFFER, _renderbuffer);
     [_mainContext renderbufferStorage:GL_RENDERBUFFER fromDrawable:(CAEAGLLayer *)self.layer];
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, _renderbuffer);
 }
 #endif
 
@@ -682,7 +687,9 @@ typedef enum EGLRenderingAPI : int
 {
     glGenFramebuffers(1, &_framebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, _framebuffer);
+#if TARGET_OS_IOS
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, _renderbuffer);
+#endif
 
     if (_msaaEnabled) {
         glGenRenderbuffers(1, &_sampleRenderbuffer);
