@@ -364,7 +364,7 @@ typedef enum EGLRenderingAPI : int
 
 #pragma mark - context creation
 #ifdef USE_EGL
-- (EGLContext)createEGLContextWithDisplay:(EGLDisplay)display api:(EGLRenderingAPI)api sharedContext:(EGLContext)sharedContext config:(EGLConfig*)config depthSize:(EGLint)depthSize msaa:(BOOL)msaa
+- (EGLContext)createEGLContextWithDisplay:(EGLDisplay)display api:(EGLRenderingAPI)api sharedContext:(EGLContext)sharedContext config:(EGLConfig*)config depthSize:(EGLint)depthSize msaa:(BOOL*)msaa
 {
     EGLint multisampleAttribs[] = {
             EGL_BLUE_SIZE, 8,
@@ -384,11 +384,15 @@ typedef enum EGLRenderingAPI : int
     };
 
     EGLint numConfigs;
-    if (msaa) {
+    if (*msaa) {
         // Try to enable multisample but fallback if not available
-        if (!eglChooseConfig(display, multisampleAttribs, config, 1, &numConfigs) && !eglChooseConfig(display, attribs, config, 1, &numConfigs)) {
+        if (!eglChooseConfig(display, multisampleAttribs, config, 1, &numConfigs)) {
+            *msaa = NO;
             NSLog(@"eglChooseConfig() returned error %d", eglGetError());
-            return EGL_NO_CONTEXT;
+            if (!eglChooseConfig(display, attribs, config, 1, &numConfigs)) {
+                NSLog(@"eglChooseConfig() returned error %d", eglGetError());
+                return EGL_NO_CONTEXT;
+            }
         }
     } else {
         if (!eglChooseConfig(display, attribs, config, 1, &numConfigs)) {
@@ -482,7 +486,7 @@ typedef enum EGLRenderingAPI : int
 
     eglSwapInterval(_display, 0);
 
-    _renderContext = [self createEGLContextWithDisplay:_display api:_api sharedContext:EGL_NO_CONTEXT config:&_renderConfig depthSize:24 msaa:_msaaEnabled];
+    _renderContext = [self createEGLContextWithDisplay:_display api:_api sharedContext:EGL_NO_CONTEXT config:&_renderConfig depthSize:24 msaa:&_msaaEnabled];
 
     if (_renderContext == EGL_NO_CONTEXT) {
         return;
@@ -531,6 +535,7 @@ typedef enum EGLRenderingAPI : int
     if (!pixelFormat) {
         if (_msaaEnabled) {
             // Fallback to non-MSAA
+            _msaaEnabled = NO;
             pixelFormat = [[NSOpenGLPixelFormat alloc] initWithAttributes:attr];
         }
         if (!pixelFormat)
