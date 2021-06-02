@@ -97,6 +97,9 @@ typedef enum EGLRenderingAPI : int
 
     glDrawArrays(GL_TRIANGLES, 0, 6);
 
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
     glDisableVertexAttribArray(_renderProgTexPositionLocation);
     glDisableVertexAttribArray(_renderProgPositionLocation);
 
@@ -673,6 +676,8 @@ typedef enum EGLRenderingAPI : int
     _glLayer.renderProgTexLocation = renderProgTexLocation;
     _glLayer.renderProgTexPositionLocation = renderProgTexPositionLocation;
 
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
     return YES;
 }
 #endif
@@ -717,7 +722,6 @@ typedef enum EGLRenderingAPI : int
         // Bind back
         glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
     } else {
-        glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
         glGenRenderbuffers(1, &_depthBuffer);
 
         [self updateBuffersSize:size];
