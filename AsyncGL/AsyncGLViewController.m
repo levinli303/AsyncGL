@@ -5,6 +5,7 @@
 
 #import "AsyncGLViewController.h"
 #import "AsyncGLView+Private.h"
+#import "AsyncGLExecutor+Private.h"
 
 @interface AsyncGLViewController () <AsyncGLViewDelegate>
 
@@ -27,9 +28,9 @@
 #pragma mark - lifecycle
 
 #if TARGET_OS_IOS
-- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled screen:(UIScreen *)screen initialFrameRate:(NSInteger)frameRate
+- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled screen:(UIScreen *)screen initialFrameRate:(NSInteger)frameRate executor:(nullable AsyncGLExecutor *)executor
 #else
-- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled
+- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled executor:(nullable AsyncGLExecutor *)executor
 #endif
 {
     self = [super initWithNibName:nil bundle:nil];
@@ -48,6 +49,8 @@
         _glView = nil;
         _viewIsVisible = NO;
         _ready = NO;
+        _executor = executor;
+        _executor.viewController = self;
         [self _configureNotifications];
     }
     return self;
@@ -59,6 +62,7 @@
     _glView.msaaEnabled = _msaaEnabled;
     _glView.delegate = self;
     self.view = _glView;
+    _executor.queue = _glView.renderQueue;
 }
 
 - (void)dealloc
@@ -210,11 +214,6 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 - (void)drawGL:(CGSize)rect
 {
     [NSException raise:NSInternalInconsistencyException format:@"You must override %@ in a subclass", NSStringFromSelector(_cmd)];
-}
-
-- (void)makeRenderContextCurrent
-{
-    [_glView makeRenderContextCurrent];
 }
 
 #if TARGET_OS_IOS
