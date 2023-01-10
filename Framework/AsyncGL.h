@@ -11,3 +11,4 @@ FOUNDATION_EXPORT const unsigned char AsyncGLVersionString[];
 
 #import <AsyncGL/AsyncGLView.h>
 #import <AsyncGL/AsyncGLViewController.h>
+#import <AsyncGL/AsyncGLExecutor.h>
