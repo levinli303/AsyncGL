@@ -64,6 +64,7 @@
     _glView = [AsyncGLView new];
     _glView.api = _api;
     _glView.msaaEnabled = _msaaEnabled;
+    [_glView commonSetup];
     _glView.delegate = self;
     self.view = _glView;
     _internalExecutor.queue = _glView.renderQueue;
