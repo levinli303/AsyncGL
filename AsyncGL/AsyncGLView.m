@@ -399,7 +399,8 @@ typedef enum EGLRenderingAPI : int
             EGL_RED_SIZE, 8,
             EGL_DEPTH_SIZE, depthSize,
             EGL_SAMPLES, 4,
-            EGL_SAMPLE_BUFFERS, 1,
+            EGL_SAMPLE_BUFFERS, EGL_TRUE,
+            EGL_BIND_TO_TEXTURE_RGB, EGL_TRUE,
             EGL_NONE
     };
     EGLint attribs[] = {
@@ -407,6 +408,7 @@ typedef enum EGLRenderingAPI : int
             EGL_GREEN_SIZE, 8,
             EGL_RED_SIZE, 8,
             EGL_DEPTH_SIZE, depthSize,
+            EGL_BIND_TO_TEXTURE_RGB, EGL_TRUE,
             EGL_NONE
     };
 
