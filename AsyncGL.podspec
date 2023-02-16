@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
   spec.name         = "AsyncGL"
-  spec.version      = "0.0.21"
+  spec.version      = "0.0.22"
   spec.summary      = "A framework that allows rendering OpenGL (ES) contents on a GCD dispatch queue."
   spec.homepage     = "https://github.com/levinli303/AsyncGL.git"
   spec.license      = "MIT"
