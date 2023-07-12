@@ -1,22 +1,34 @@
 Pod::Spec.new do |spec|
   spec.name         = "AsyncGL"
-  spec.version      = "0.0.25"
+  spec.version      = "0.0.26"
   spec.summary      = "A framework that allows rendering OpenGL (ES) contents on a GCD dispatch queue."
   spec.homepage     = "https://github.com/levinli303/AsyncGL.git"
   spec.license      = "MIT"
   spec.author             = { "Levin Li" => "lilinfeng303@outlook.com" }
 
-  spec.ios.deployment_target = "8.0"
-  spec.osx.deployment_target = "10.9"
+  spec.ios.deployment_target = "13.1"
+  spec.osx.deployment_target = "10.15"
 
   spec.source       = { :git => "https://github.com/levinli303/AsyncGL.git", :tag => "#{spec.version}" }
 
-  spec.source_files = ["AsyncGL/**/*.{h,m}", "GL/**/*.{h,inc}"]
-  spec.public_header_files = "AsyncGL/include/*.h"
+  spec.subspec 'OpenGL' do |subspec|
+    subspec.source_files = "AsyncGL/**/*.{h,m}"
+    subspec.public_header_files = "AsyncGL/include/*.h"
+  end
 
-  spec.xcconfig     = {
-    'HEADER_SEARCH_PATHS' => [
-      '"$(PODS_TARGET_SRCROOT)/GL"'
-    ]
-  }
+  spec.subspec 'libGLESv2' do |subspec|
+    subspec.vendored_frameworks = "XCFrameworks/libGLESv2.xcframework"
+  end
+
+  spec.subspec 'libEGL' do |subspec|
+    subspec.vendored_frameworks = "XCFrameworks/libEGL.xcframework"
+  end
+
+  spec.subspec 'ANGLE' do |subspec|
+    subspec.dependency 'AsyncGL/libGLESv2', "#{spec.version}"
+    subspec.dependency 'AsyncGL/libEGL', "#{spec.version}"
+    subspec.source_files = "AsyncGL/**/*.{h,m}"
+    subspec.public_header_files = "AsyncGL/include/*.h"
+    subspec.xcconfig = { 'GCC_PREPROCESSOR_DEFINITIONS' => '$(inherited) USE_EGL' }
+  end
 end
