@@ -18,11 +18,8 @@
 #if TARGET_OS_OSX
 @import QuartzCore.CAMetalLayer;
 #endif
-#include "GLES2/gl2.h"
-#include "GLES2/gl2ext.h"
-#include "GLES3/gl3.h"
-#include "EGL/egl.h"
-#include "EGL/eglext.h"
+#include <libGLESv2/libGLESv2.h>
+#include <libEGL/libEGL.h>
 
 /* EGL rendering API */
 typedef enum EGLRenderingAPI : int
