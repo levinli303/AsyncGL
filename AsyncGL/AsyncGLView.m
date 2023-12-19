@@ -710,17 +710,13 @@ typedef enum EGLRenderingAPI : int
 
 #pragma mark - internal implementation
 - (BOOL)setupGL:(CGSize)size {
-    if ([_delegate respondsToSelector:@selector(_prepareGL:)])
-        return [_delegate _prepareGL:size];
-
-    return YES;
+    return [_delegate _prepareGL:size];
 }
 
 - (void)_drawGL:(CGSize)size
 {
 #ifdef USE_EGL
-    if ([_delegate respondsToSelector:@selector(_drawGL:)])
-        [_delegate _drawGL:size];
+    [_delegate _drawGL:size];
 #else
     [self updateBuffersSize:size];
 
@@ -733,8 +729,7 @@ typedef enum EGLRenderingAPI : int
 #if TARGET_OS_OSX
         glEnable(GL_MULTISAMPLE);
 #endif
-        if ([_delegate respondsToSelector:@selector(_drawGL:)])
-            [_delegate _drawGL:size];
+        [_delegate _drawGL:size];
 #if TARGET_OS_OSX
         glDisable(GL_MULTISAMPLE);
 #endif
@@ -756,16 +751,14 @@ typedef enum EGLRenderingAPI : int
         glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 #endif
     } else {
-        if ([_delegate respondsToSelector:@selector(_drawGL:)])
-            [_delegate _drawGL:size];
+        [_delegate _drawGL:size];
     }
 #endif
 }
 
 #pragma mark - clear
 - (void)clearGL {
-    if ([_delegate respondsToSelector:@selector(_clearGL)])
-        [_delegate _clearGL];
+    [_delegate _clearGL];
 
     [self _clearGL];
 }
