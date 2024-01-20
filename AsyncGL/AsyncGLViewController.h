@@ -3,13 +3,7 @@
 //  Licensed under the MIT License.
 //
 
-#ifdef SWIFT_PACKAGE
-#import "AsyncGLAPI.h"
-#else
-#import <AsyncGL/AsyncGLAPI.h>
-#endif
-
-@class AsyncGLExecutor;
+#import <TargetConditionals.h>
 
 #if TARGET_OS_IOS
 @import UIKit;
@@ -17,6 +11,9 @@
 @import Cocoa;
 #endif
 
+typedef NS_ENUM(NSUInteger, AsyncGLAPI);
+
+@class AsyncGLExecutor;
 @class AsyncGLView;
 
 NS_ASSUME_NONNULL_BEGIN
