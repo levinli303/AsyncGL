@@ -3,7 +3,11 @@
 //  Licensed under the MIT License.
 //
 
+#ifdef SWIFT_PACKAGE
+#import "AsyncGLAPI.h"
+#else
 #import <AsyncGL/AsyncGLAPI.h>
+#endif
 
 @class AsyncGLExecutor;
 
