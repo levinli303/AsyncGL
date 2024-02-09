@@ -76,6 +76,7 @@ GL_APICALL void GL_APIENTRY glProvokingVertexANGLE(GLenum provokeMode);
 #ifndef GL_ANGLE_stencil_texturing
 #define GL_ANGLE_stencil_texturing 1
 #define GL_DEPTH_STENCIL_TEXTURE_MODE_ANGLE           0x90EA
+#define GL_STENCIL_INDEX_ANGLE                        0x1901
 #endif /* GL_ANGLE_stencil_texturing */
 
 #ifndef GL_ANGLE_renderability_validation
@@ -600,11 +601,6 @@ GL_APICALL void GL_APIENTRY glReleaseTexturesANGLE(GLuint numTexture, const GLui
 #endif
 #endif /* GL_ANGLE_vulkan_image */
 
-#ifndef GL_CHROMIUM_texture_filtering_hint
-#define GL_CHROMIUM_texture_filtering_hint
-#define GL_TEXTURE_FILTERING_HINT_CHROMIUM 0x8AF0
-#endif /* GL_CHROMIUM_texture_filtering_hint */
-
 #ifndef GL_NV_robustness_video_memory
 #define GL_NV_robustness_video_memory
 #define GL_PURGED_CONTEXT_RESET_NV 0x92BB
@@ -734,5 +730,17 @@ typedef void (GL_APIENTRYP PFNGLLOGICOPANGLEPROC) (GLenum);
 GL_APICALL void GL_APIENTRY glLogicOpANGLE (GLenum);
 #endif
 #endif /* GL_ANGLE_logic_op */
+
+#ifndef GL_ANGLE_variable_rasterization_rate_metal
+#define GL_ANGLE_variable_rasterization_rate_metal 1
+
+#define GL_VARIABLE_RASTERIZATION_RATE_ANGLE            0x96BC
+#define GL_METAL_RASTERIZATION_RATE_MAP_BINDING_ANGLE   0x96BD
+typedef void *GLMTLRasterizationRateMapANGLE;
+typedef void (GL_APIENTRYP PFNGLBINDMETALRASTERIZATIONRATEMAPANGLEPROC) (GLMTLRasterizationRateMapANGLE);
+#ifdef GL_GLEXT_PROTOTYPES
+GL_APICALL void GL_APIENTRY glBindMetalRasterizationRateMapANGLE(GLMTLRasterizationRateMapANGLE map);
+#endif
+#endif /* GL_ANGLE_variable_rasterization_rate_metal */
 
 #endif  // INCLUDE_GLES2_GL2EXT_ANGLE_H_

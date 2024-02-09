@@ -3940,11 +3940,7 @@ GL_APICALL void GL_APIENTRY glEndTilingQCOM (GLbitfield preserveMask);
 #endif /* GL_VIV_shader_binary */
 
 /* ANGLE GLES2 extensions */
-#if __has_include(<libGLESv2/GLES2/gl2ext_angle.h>)
 #include <libGLESv2/GLES2/gl2ext_angle.h>
-#else
-#include "gl2ext_angle.h"
-#endif
 
 #ifdef __cplusplus
 }
