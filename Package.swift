@@ -15,6 +15,10 @@ let package = Package(
             name: "AsyncGL",
             targets: ["AsyncGL"]
         ),
+        .library(
+            name: "AsyncGLANGLE",
+            targets: ["AsyncGLANGLE"]
+        ),
         .library(name: "ANGLE", targets: [
             "libGLESv2",
             "libEGL",
@@ -28,6 +32,19 @@ let package = Package(
             path: "AsyncGL",
             publicHeadersPath: "include",
             cSettings: [
+                .define("GL_SILENCE_DEPRECATION"),
+            ]
+        ),
+        .target(
+            name: "AsyncGLANGLE",
+            dependencies: [
+                .target(name: "libGLESv2"),
+                .target(name: "libEGL"),
+            ],
+            path: "AsyncGLANGLE",
+            publicHeadersPath: "include",
+            cSettings: [
+                .define("USE_EGL"),
                 .define("GL_SILENCE_DEPRECATION"),
             ]
         )
