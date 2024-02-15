@@ -613,6 +613,10 @@ typedef enum EGLRenderingAPI : int
         return NO;
 
     [self makeRenderContextCurrent];
+
+    if (_msaaEnabled)
+        glEnable(GL_MULTISAMPLE);
+
     __block CGSize size;
     dispatch_sync(dispatch_get_main_queue(), ^{
         CGSize frameSize = self.frame.size;
@@ -743,13 +747,7 @@ typedef enum EGLRenderingAPI : int
     if (_msaaEnabled) {
         glBindFramebuffer(GL_FRAMEBUFFER, _sampleFramebuffer);
 
-#if TARGET_OS_OSX
-        glEnable(GL_MULTISAMPLE);
-#endif
         [_delegate _drawGL:size];
-#if TARGET_OS_OSX
-        glDisable(GL_MULTISAMPLE);
-#endif
 
         glBindFramebuffer(GL_READ_FRAMEBUFFER, _sampleFramebuffer);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, _framebuffer);
