@@ -39,9 +39,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithNibName:(nullable NSString *)nibNameOrNil bundle:(nullable NSBundle *)nibBundleOrNil NS_UNAVAILABLE;
 - (nullable instancetype)initWithCoder:(NSCoder *)coder NS_UNAVAILABLE;
 
-- (BOOL)prepareGL:(CGSize)size samples:(NSInteger)samples;
-- (void)drawGL:(CGSize)size;
-- (void)clearGL;
+- (BOOL)prepareGL:(CGSize)size samples:(NSInteger)samples NS_SWIFT_NONISOLATED;
+- (void)drawGL:(CGSize)size NS_SWIFT_NONISOLATED;
+- (void)clearGL NS_SWIFT_NONISOLATED;
 
 - (void)setPreferredFramesPerSecond:(NSInteger)preferredFramesPerSecond API_AVAILABLE(ios(10.0), tvos(10.0), macos(14.0));
 #if TARGET_OS_IOS

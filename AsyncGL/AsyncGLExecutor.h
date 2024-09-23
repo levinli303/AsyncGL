@@ -13,8 +13,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)init;
 
-- (void)runTaskAsynchronously:(void(^)(void))task;
-- (void)runTaskSynchronously:(void(^)(void))task;
+- (void)runTaskAsynchronously:(void(NS_SWIFT_SENDABLE ^)(void))task;
+- (void)runTaskSynchronously:(void(NS_SWIFT_SENDABLE ^)(void))task;
 - (void)makeRenderContextCurrent;
 
 @end
