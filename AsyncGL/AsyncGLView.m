@@ -121,17 +121,19 @@ typedef enum EGLRenderingAPI : int
 @property (nonatomic) GLuint sampleColorbuffer;
 @property (nonatomic) GLuint mainColorbuffer;
 @property (nonatomic) EAGLRenderingAPI internalAPI;
-@property (nonatomic, strong) EAGLContext *renderContext;
-@property (nonatomic, strong) EAGLContext *mainContext;
+@property (nonatomic) EAGLContext *renderContext;
+@property (nonatomic) EAGLContext *mainContext;
+@property (nonatomic) CAEAGLLayer *eaglLayer;
 #else
 @property (nonatomic) GLuint renderColorbuffer;
 @property (nonatomic) CGLOpenGLProfile internalAPI;
 @property (nonatomic) CGLContextObj renderContext;
-@property (nonatomic, strong) PassthroughGLLayer *glLayer;
+@property (nonatomic) PassthroughGLLayer *glLayer;
 #endif
 #endif
 
 @property (nonatomic) CGSize drawableSize;
+@property (nonatomic) CGSize lastRenderSize;
 @property (nonatomic) BOOL shouldRender;
 @property (nonatomic) BOOL isObservingNotifications;
 @end
@@ -251,9 +253,21 @@ typedef enum EGLRenderingAPI : int
 
 - (void)render {
     os_unfair_lock_lock(&_renderLock);
+    CGSize size = _drawableSize;
+    BOOL shouldRender = _shouldRender;
+    os_unfair_lock_unlock(&_renderLock);
 
-    if (_shouldRender) {
-        CGSize size = _drawableSize;
+    if (shouldRender) {
+        if (!CGSizeEqualToSize(_lastRenderSize, size)) {
+            _lastRenderSize = size;
+            #ifndef USE_EGL
+            #if !TARGET_OSX_OR_CATALYST
+            [self makeMainContextCurrent];
+            glBindRenderbuffer(GL_RENDERBUFFER, _mainColorbuffer);
+            [_mainContext renderbufferStorage:GL_RENDERBUFFER fromDrawable:_eaglLayer];
+            #endif
+            #endif
+        }
 
         [self makeRenderContextCurrent];
         [self _drawGL:size];
@@ -269,13 +283,12 @@ typedef enum EGLRenderingAPI : int
     #endif
     #endif
     }
-
-    os_unfair_lock_unlock(&_renderLock);
 }
 
 #pragma mark - private methods
 - (void)commonSetup {
     _drawableSize = CGSizeZero;
+    _lastRenderSize = CGSizeZero;
     _shouldRender = YES;
     _contextsCreated = NO;
     _contextState = AsyncGLViewContextStateNone;
@@ -332,11 +345,11 @@ typedef enum EGLRenderingAPI : int
 
 #ifdef USE_EGL
     _metalLayer = (CAMetalLayer *)self.layer;
-#else
-#if TARGET_OSX_OR_CATALYST
+#elif TARGET_OSX_OR_CATALYST
     _glLayer = (PassthroughGLLayer *)self.layer;
     _glLayer.asynchronous = YES;
-#endif
+#else
+    _eaglLayer = (CAEAGLLayer *)self.layer;
 #endif
 
     _event = AsyncGLViewEventNone;
@@ -952,16 +965,7 @@ typedef enum EGLRenderingAPI : int
     CGSize newSize = CGSizeMake(frameSize.width * scale, frameSize.height * scale);
 
     os_unfair_lock_lock(&_renderLock);
-    if (!CGSizeEqualToSize(_drawableSize, newSize)) {
-#ifndef USE_EGL
-#if !TARGET_OSX_OR_CATALYST
-        [self makeMainContextCurrent];
-        glBindRenderbuffer(GL_RENDERBUFFER, _mainColorbuffer);
-        [_mainContext renderbufferStorage:GL_RENDERBUFFER fromDrawable:(CAEAGLLayer *)self.layer];
-#endif
-#endif
-        _drawableSize = newSize;
-    }
+    _drawableSize = newSize;
     _shouldRender = shouldRender;
     os_unfair_lock_unlock(&_renderLock);
 }
