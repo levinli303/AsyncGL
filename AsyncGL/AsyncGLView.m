@@ -252,7 +252,11 @@ typedef enum EGLRenderingAPI : int
 }
 
 - (void)render {
-    os_unfair_lock_lock(&_renderLock);
+    if (@available(iOS 18.0, macOS 15.0, *)) {
+        os_unfair_lock_lock_with_flags(&_renderLock, OS_UNFAIR_LOCK_FLAG_ADAPTIVE_SPIN);
+    } else {
+        os_unfair_lock_lock(&_renderLock);
+    }
     CGSize size = _drawableSize;
     BOOL shouldRender = _shouldRender;
     os_unfair_lock_unlock(&_renderLock);
@@ -964,7 +968,11 @@ typedef enum EGLRenderingAPI : int
     CGFloat scale = self.layer.contentsScale;
     CGSize newSize = CGSizeMake(frameSize.width * scale, frameSize.height * scale);
 
-    os_unfair_lock_lock(&_renderLock);
+    if (@available(iOS 18.0, macOS 15.0, *)) {
+        os_unfair_lock_lock_with_flags(&_renderLock, OS_UNFAIR_LOCK_FLAG_ADAPTIVE_SPIN);
+    } else {
+        os_unfair_lock_lock(&_renderLock);
+    }
     _drawableSize = newSize;
     _shouldRender = shouldRender;
     os_unfair_lock_unlock(&_renderLock);
