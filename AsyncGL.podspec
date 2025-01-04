@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
   spec.name         = "AsyncGL"
-  spec.version      = "1.0.3"
+  spec.version      = "1.0.4"
   spec.summary      = "A framework that allows rendering OpenGL (ES) contents on an NSThread."
   spec.homepage     = "https://github.com/levinli303/AsyncGL.git"
   spec.license      = "MIT"
@@ -30,6 +30,5 @@ Pod::Spec.new do |spec|
     subspec.dependency 'AsyncGL/libEGL', "#{spec.version}"
     subspec.source_files = "AsyncGL/**/*.{h,m}"
     subspec.public_header_files = "AsyncGL/include/*.h"
-    subspec.xcconfig = { 'GCC_PREPROCESSOR_DEFINITIONS' => '$(inherited) USE_EGL' }
   end
 end

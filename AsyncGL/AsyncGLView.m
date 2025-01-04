@@ -29,6 +29,10 @@ typedef NS_ENUM(NSUInteger, AsyncGLViewContextState) {
 #define TARGET_OSX_OR_CATALYST          1
 #endif
 
+#if __has_include(<libEGL/libEGL.h>) && __has_include(<libGLESv2/libGLESv2.h>)
+#define USE_EGL
+#endif
+
 #ifdef USE_EGL
 #define GL_GLEXT_PROTOTYPES
 #define GL_EXT_texture_border_clamp 0

@@ -44,7 +44,6 @@ let package = Package(
             path: "AsyncGLANGLE",
             publicHeadersPath: "include",
             cSettings: [
-                .define("USE_EGL"),
                 .define("GL_SILENCE_DEPRECATION"),
             ]
         )
