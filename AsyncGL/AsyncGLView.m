@@ -285,7 +285,7 @@ typedef enum EGLRenderingAPI : int
         glFlush();
     #if !TARGET_OSX_OR_CATALYST
         glBindRenderbuffer(GL_RENDERBUFFER, _mainColorbuffer);
-        [_renderContext presentRenderbuffer:_mainColorbuffer];
+        [_renderContext presentRenderbuffer:GL_RENDERBUFFER];
     #else
         [_glLayer display];
     #endif
