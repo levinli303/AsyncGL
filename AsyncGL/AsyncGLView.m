@@ -144,7 +144,7 @@ typedef enum EGLRenderingAPI : int
 
 @implementation AsyncGLView
 
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
 + (Class)layerClass {
 #ifdef USE_EGL
     return [CAMetalLayer class];
@@ -256,7 +256,7 @@ typedef enum EGLRenderingAPI : int
 }
 
 - (void)render {
-    if (@available(iOS 18.0, macOS 15.0, *)) {
+    if (@available(iOS 18.0, tvOS 18.0, macOS 15.0, *)) {
         os_unfair_lock_lock_with_flags(&_renderLock, OS_UNFAIR_LOCK_FLAG_ADAPTIVE_SPIN);
     } else {
         os_unfair_lock_lock(&_renderLock);
@@ -345,7 +345,7 @@ typedef enum EGLRenderingAPI : int
 
     // Set layer properties
     self.layer.opaque = YES;
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
     self.layer.backgroundColor = [[UIColor blackColor] CGColor];
 #else
     self.layer.backgroundColor = [[NSColor blackColor] CGColor];
@@ -963,7 +963,7 @@ typedef enum EGLRenderingAPI : int
 
     CGSize frameSize = self.frame.size;
     BOOL shouldRender = frameSize.width > 0.0f && frameSize.height > 0.0f && !self.isHidden && self.window;
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
     shouldRender = shouldRender && ([[UIApplication sharedApplication] applicationState] != UIApplicationStateBackground);
 #else
     shouldRender = shouldRender && ([[self window] occlusionState] & NSWindowOcclusionStateVisible);
@@ -972,7 +972,7 @@ typedef enum EGLRenderingAPI : int
     CGFloat scale = self.layer.contentsScale;
     CGSize newSize = CGSizeMake(frameSize.width * scale, frameSize.height * scale);
 
-    if (@available(iOS 18.0, macOS 15.0, *)) {
+    if (@available(iOS 18.0, tvOS 18.0, macOS 15.0, *)) {
         os_unfair_lock_lock_with_flags(&_renderLock, OS_UNFAIR_LOCK_FLAG_ADAPTIVE_SPIN);
     } else {
         os_unfair_lock_lock(&_renderLock);
@@ -982,7 +982,7 @@ typedef enum EGLRenderingAPI : int
     os_unfair_lock_unlock(&_renderLock);
 }
 
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
 - (void)layoutSubviews {
     [super layoutSubviews];
 
@@ -1015,7 +1015,7 @@ typedef enum EGLRenderingAPI : int
     [self _checkViewState];
 }
 
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
 - (void)willMoveToWindow:(UIWindow *)newWindow {
     [super willMoveToWindow:newWindow];
 

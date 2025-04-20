@@ -6,8 +6,9 @@ let package = Package(
     name: "AsyncGL",
     platforms: [
         .iOS(.v14),
-        .macOS(.v11),
         .macCatalyst(.v14),
+        .tvOS(.v14),
+        .macOS(.v11),
         .visionOS(.v1),
     ],
     products: [

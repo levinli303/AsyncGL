@@ -7,7 +7,7 @@
 #import "AsyncGLView+Private.h"
 #import "AsyncGLExecutor+Private.h"
 
-#if !TARGET_OS_IOS
+#if TARGET_OS_OSX
 @import QuartzCore;
 #endif
 
@@ -16,7 +16,7 @@
 @property (nonatomic) AsyncGLExecutor *internalExecutor;
 
 @property (nonatomic) NSInteger internalPreferredFramesPerSecond;
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
 @property (nonatomic) CADisplayLink *displayLink;
 @property (weak, nonatomic) UIScreen *internalScreen;
 #else
@@ -35,7 +35,7 @@
 
 #pragma mark - lifecycle
 
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
 - (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled screen:(UIScreen *)screen initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor
 #else
 - (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled screen:(NSScreen *)screen initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor
@@ -48,7 +48,7 @@
         _internalScreen = screen;
         _internalPreferredFramesPerSecond = frameRate;
         _displayLink = nil;
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
         _pauseOnWillResignActive = YES;
         _resumeOnDidBecomeActive = YES;
 #else
@@ -84,7 +84,7 @@
         _displayLink = nil;
     }
 
-#if !TARGET_OS_IOS
+#if TARGET_OS_OSX
     if (_cvDisplayLink != NULL) {
         CVDisplayLinkStop(_cvDisplayLink);
         CVDisplayLinkRelease(_cvDisplayLink);
@@ -95,7 +95,7 @@
     [_glView clear];
 }
 
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
 - (void)viewWillDisappear:(BOOL)animated
 {
     [super viewWillDisappear:animated];
@@ -157,7 +157,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
     if (_displayLink != nil)
         [_displayLink setPaused:paused];
-#if !TARGET_OS_IOS
+#if TARGET_OS_OSX
     else if (_cvDisplayLink != NULL)
         paused ? CVDisplayLinkStop(_cvDisplayLink) : CVDisplayLinkStart(_cvDisplayLink);
 #endif
@@ -173,12 +173,12 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
         return NO;
 
     dispatch_sync(dispatch_get_main_queue(), ^{
-#if !TARGET_OS_IOS
+#if TARGET_OS_OSX
         if (@available(macOS 14.0, *)) {
 #endif
             self.displayLink = [self.internalScreen displayLinkWithTarget:self selector:@selector(requestRender)];
             if (self.displayLink == nil) {
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
                 self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(requestRender)];
 #else
                 self.displayLink = [self.view displayLinkWithTarget:self selector:@selector(requestRender)];
@@ -186,7 +186,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
             }
             [self setPreferredFramesPerSecond:self.internalPreferredFramesPerSecond displayLink:self.displayLink];
             [self.displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
-#if !TARGET_OS_IOS
+#if TARGET_OS_OSX
         } else {
             NSNumber *directDisplayIDNumber = self.internalScreen.deviceDescription[@"NSScreenNumber"];
             if (directDisplayIDNumber != nil)
@@ -231,14 +231,14 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     [self setPreferredFramesPerSecond:preferredFramesPerSecond displayLink:_displayLink];
 }
 
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
 - (void)setScreen:(UIScreen *)screen
 #else
 - (void)setScreen:(NSScreen *)screen
 #endif
 {
     _internalScreen = screen;
-#if !TARGET_OS_IOS
+#if TARGET_OS_OSX
     if (@available(macOS 14.0, *)) {
 #endif
         if (_displayLink != nil) {
@@ -248,7 +248,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
         _displayLink = [screen displayLinkWithTarget:self selector:@selector(requestRender)];
         if (_displayLink == nil) {
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
             _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(requestRender)];
 #else
             _displayLink = [self.view displayLinkWithTarget:self selector:@selector(requestRender)];
@@ -256,7 +256,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
         }
         [self setPreferredFramesPerSecond:_internalPreferredFramesPerSecond displayLink:_displayLink];
         [_displayLink addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
-#if !TARGET_OS_IOS
+#if TARGET_OS_OSX
     } else {
         if (_cvDisplayLink != NULL) {
             CVDisplayLinkStop(_cvDisplayLink);
@@ -280,7 +280,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 {
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
 
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
     [center addObserver:self selector:@selector(_pauseByNotification) name:UIApplicationWillResignActiveNotification object:nil];
     [center addObserver:self selector:@selector(_resumeByNotification) name:UIApplicationDidBecomeActiveNotification object:nil];
 #else
@@ -304,22 +304,22 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
 - (void)setPreferredFramesPerSecond:(NSInteger)preferredFramesPerSecond displayLink:(CADisplayLink *)displayLink API_AVAILABLE(ios(10.0), tvos(10.0), macos(14.0)) {
     if (preferredFramesPerSecond >= 0) {
-#if TARGET_OS_IOS
-        if (@available(iOS 15, *)) {
+#if !TARGET_OS_OSX
+        if (@available(iOS 15.0, tvOS 15.0, *)) {
 #endif
             [displayLink setPreferredFrameRateRange:CAFrameRateRangeMake(preferredFramesPerSecond / 2, preferredFramesPerSecond, preferredFramesPerSecond)];
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
         } else {
             [displayLink setPreferredFramesPerSecond:preferredFramesPerSecond];
         }
 #endif
     } else {
         CGFloat maxFramesPerSecond = [self.internalScreen maximumFramesPerSecond];
-#if TARGET_OS_IOS
-        if (@available(iOS 15, *)) {
+#if !TARGET_OS_OSX
+        if (@available(iOS 15.0, tvOS 15.0, *)) {
 #endif
             [displayLink setPreferredFrameRateRange:CAFrameRateRangeMake(maxFramesPerSecond / 2, maxFramesPerSecond, maxFramesPerSecond)];
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
         } else {
             [displayLink setPreferredFramesPerSecond:maxFramesPerSecond];
         }

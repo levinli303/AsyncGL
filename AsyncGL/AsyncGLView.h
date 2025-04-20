@@ -5,7 +5,7 @@
 
 #import <TargetConditionals.h>
 
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
 @import UIKit;
 #else
 @import Cocoa;
@@ -13,7 +13,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-#if TARGET_OS_IOS
+#if !TARGET_OS_OSX
 @interface AsyncGLView : UIView
 #else
 @interface AsyncGLView : NSView
