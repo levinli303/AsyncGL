@@ -205,9 +205,8 @@ typedef enum EGLRenderingAPI : int
     }
     [_condition unlock];
 
-    if (semaphore != nil) {
-        dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC));
-    }
+    if (semaphore != nil)
+        dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
 }
 
 - (void)resume {
@@ -422,21 +421,23 @@ typedef enum EGLRenderingAPI : int
                 }
             }
 
+            BOOL paused = (event & AsyncGLViewEventPause) != 0;
+            if (paused) {
+                [_condition lock];
+                _suspendedFlag = YES;
+                [_condition unlock];
+            }
+
             if (_contextsCreated) {
-                if ((event & AsyncGLViewEventDraw) != 0)
+                if ((event & AsyncGLViewEventDraw) != 0 && !paused)
                     needsDrawn = YES;
 
                 for (void (^task)(void) in tasks)
                     task();
             }
 
-            if ((event & AsyncGLViewEventPause) != 0) {
-                [_condition lock];
-                _suspendedFlag = YES;
-                [_condition unlock];
-            } else if (needsDrawn) {
+            if (needsDrawn)
                 [self render];
-            }
         }
     }
 }
