@@ -26,7 +26,7 @@
 #endif
 @property (nonatomic) dispatch_source_t displaySource;
 @property (nonatomic) BOOL msaaEnabled;
-@property (nonatomic) BOOL viewIsVisible;
+@property (nonatomic) BOOL viewIsAttachedToWindow;
 @property (atomic, getter=isReady) BOOL ready;
 @property (nonatomic) AsyncGLAPI api;
 @end
@@ -57,7 +57,7 @@
         _cvDisplayLink = NULL;
 #endif
         _glView = nil;
-        _viewIsVisible = NO;
+        _viewIsAttachedToWindow = NO;
         _ready = NO;
         _internalExecutor = executor;
         _api = api;
@@ -94,41 +94,6 @@
 
     [_glView clear];
 }
-
-#if !TARGET_OS_OSX
-- (void)viewWillDisappear:(BOOL)animated
-{
-    [super viewWillDisappear:animated];
-
-    _viewIsVisible = NO;
-    [self setPaused:YES];
-}
-
-- (void)viewWillAppear:(BOOL)animated
-{
-    [super viewWillAppear:animated];
-
-    _viewIsVisible = YES;
-    [self setPaused:NO];
-}
-
-#else
-- (void)viewWillDisappear
-{
-    [super viewWillDisappear];
-
-    _viewIsVisible = NO;
-    [self setPaused:YES];
-}
-
-- (void)viewWillAppear
-{
-    [super viewWillAppear];
-
-    _viewIsVisible = YES;
-    [self setPaused:NO];
-}
-#endif
 
 #pragma mark - private methods
 
@@ -216,6 +181,15 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 {
 }
 
+#if !TARGET_OS_OSX
+- (void)_viewWillMoveToWindow:(UIWindow *)window {
+#else
+- (void)_viewWillMoveToWindow:(NSWindow *)window {
+#endif
+    _viewIsAttachedToWindow = window != nil;
+    [self setPaused:!_viewIsAttachedToWindow];
+}
+
 - (BOOL)prepareGL:(CGSize)rect samples:(NSInteger)samples
 {
     return YES;
@@ -298,7 +272,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
 - (void)_resumeByNotification
 {
-    if (_resumeOnDidBecomeActive && _viewIsVisible)
+    if (_resumeOnDidBecomeActive && _viewIsAttachedToWindow)
         [self setPaused:NO];
 }
 

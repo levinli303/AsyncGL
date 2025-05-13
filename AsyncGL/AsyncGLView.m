@@ -1019,25 +1019,17 @@ typedef enum EGLRenderingAPI : int
 #if !TARGET_OS_OSX
 - (void)willMoveToWindow:(UIWindow *)newWindow {
     [super willMoveToWindow:newWindow];
-
-    if (newWindow && _contextState == AsyncGLViewContextStateNone) {
-        _contextState = AsyncGLViewContextStateCreationRequested;
-        [self createContexts];
-    }
-
-    [self _checkViewState];
-}
 #else
 - (void)viewWillMoveToWindow:(NSWindow *)newWindow {
     [super viewWillMoveToWindow:newWindow];
-
+#endif
     if (newWindow && _contextState == AsyncGLViewContextStateNone) {
         _contextState = AsyncGLViewContextStateCreationRequested;
         [self createContexts];
     }
 
     [self _checkViewState];
+    [_delegate _viewWillMoveToWindow:newWindow];
 }
-#endif
 
 @end

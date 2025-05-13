@@ -13,6 +13,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)_prepareGL:(CGSize)size samples:(NSInteger)samples;
 - (void)_drawGL:(CGSize)size;
 - (void)_clearGL;
+#if !TARGET_OS_OSX
+- (void)_viewWillMoveToWindow:(nullable UIWindow *)window;
+#else
+- (void)_viewWillMoveToWindow:(nullable NSWindow *)window;
+#endif
 
 @end
 
