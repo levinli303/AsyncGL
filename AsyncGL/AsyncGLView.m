@@ -357,6 +357,8 @@ typedef enum EGLRenderingAPI : int
     _glLayer.asynchronous = YES;
 #else
     _eaglLayer = (CAEAGLLayer *)self.layer;
+    if ([_eaglLayer respondsToSelector:NSSelectorFromString(@"setLowLatency:")])
+        [_eaglLayer setValue:@(YES) forKey:@"lowLatency"];
 #endif
 
     _event = AsyncGLViewEventNone;
