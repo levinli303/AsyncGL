@@ -26,7 +26,6 @@
 #endif
 @property (nonatomic) dispatch_source_t displaySource;
 @property (nonatomic) BOOL msaaEnabled;
-@property (nonatomic) BOOL viewIsAttachedToWindow;
 @property (atomic, getter=isReady) BOOL ready;
 @property (nonatomic) AsyncGLAPI api;
 @end
@@ -36,16 +35,16 @@
 #pragma mark - lifecycle
 
 #if !TARGET_OS_OSX
-- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled screen:(UIScreen *)screen initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor
+- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor
 #else
-- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled screen:(NSScreen *)screen initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor
+- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor
 #endif
 {
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
         _msaaEnabled = msaaEnabled;
         _paused = YES;
-        _internalScreen = screen;
+        _internalScreen = nil;
         _internalPreferredFramesPerSecond = frameRate;
         _displayLink = nil;
 #if !TARGET_OS_OSX
@@ -57,7 +56,6 @@
         _cvDisplayLink = NULL;
 #endif
         _glView = nil;
-        _viewIsAttachedToWindow = NO;
         _ready = NO;
         _internalExecutor = executor;
         _api = api;
@@ -186,8 +184,13 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 #else
 - (void)_viewWillMoveToWindow:(NSWindow *)window {
 #endif
-    _viewIsAttachedToWindow = window != nil;
-    [self setPaused:!_viewIsAttachedToWindow];
+#if !TARGET_OS_OSX
+    UIScreen *screen = [[window windowScene] screen];
+#else
+    NSScreen *screen = [window screen];
+#endif
+    [self setScreen:screen];
+    [self setPaused:screen == nil];
 }
 
 - (BOOL)prepareGL:(CGSize)rect samples:(NSInteger)samples
@@ -257,9 +260,11 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 #if !TARGET_OS_OSX
     [center addObserver:self selector:@selector(_pauseByNotification) name:UIApplicationWillResignActiveNotification object:nil];
     [center addObserver:self selector:@selector(_resumeByNotification) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [center addObserver:self selector:@selector(_windowDidMoveToScreen:) name:@"UIWindowDidMoveToScreenNotification" object:nil];
 #else
     [center addObserver:self selector:@selector(_pauseByNotification) name:NSApplicationWillResignActiveNotification object:nil];
     [center addObserver:self selector:@selector(_resumeByNotification) name:NSApplicationDidBecomeActiveNotification object:nil];
+    [center addObserver:self selector:@selector(_windowDidMoveToScreen:) name:NSWindowDidChangeScreenNotification object:nil];
 #endif
 
 }
@@ -272,8 +277,22 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
 
 - (void)_resumeByNotification
 {
-    if (_resumeOnDidBecomeActive && _viewIsAttachedToWindow)
+    if (_resumeOnDidBecomeActive && _internalScreen != nil)
         [self setPaused:NO];
+}
+
+- (void)_windowDidMoveToScreen:(NSNotification *)notification
+{
+    if (![[notification object] isEqual:[[self view] window]])
+        return;
+
+#if !TARGET_OS_OSX
+    UIScreen *screen = [[[[self view] window] windowScene] screen];
+#else
+    NSScreen *screen = [[[self view] window] screen];
+#endif
+    [self setScreen:screen];
+    [self setPaused:screen == nil];
 }
 
 - (void)setPreferredFramesPerSecond:(NSInteger)preferredFramesPerSecond displayLink:(CADisplayLink *)displayLink API_AVAILABLE(ios(10.0), tvos(10.0), macos(14.0)) {

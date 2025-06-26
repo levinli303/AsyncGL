@@ -30,9 +30,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, nullable) AsyncGLView *glView;
 
 #if !TARGET_OS_OSX
-- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled screen:(nullable UIScreen *)screen initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor NS_DESIGNATED_INITIALIZER;
 #else
-- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled screen:(nullable NSScreen *)screen initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithMSAAEnabled:(BOOL)msaaEnabled initialFrameRate:(NSInteger)frameRate api:(AsyncGLAPI)api executor:(AsyncGLExecutor *)executor NS_DESIGNATED_INITIALIZER;
 #endif
 + (instancetype)new NS_UNAVAILABLE;
 - (instancetype)init NS_UNAVAILABLE;
@@ -44,11 +44,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)clearGL NS_SWIFT_NONISOLATED;
 
 - (void)setPreferredFramesPerSecond:(NSInteger)preferredFramesPerSecond API_AVAILABLE(ios(10.0), tvos(10.0), macos(14.0));
-#if !TARGET_OS_OSX
-- (void)setScreen:(nullable UIScreen *)screen;
-#else
-- (void)setScreen:(nullable NSScreen *)screen;
-#endif
 
 @end
 
