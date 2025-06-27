@@ -48,6 +48,125 @@ typedef enum EGLRenderingAPI : int
     kEGLRenderingAPIOpenGLES3 = 3,
 } EGLRenderingAPI;
 
+@interface AsyncGLContext : NSObject {
+@public
+    EGLRenderingAPI _api;
+    EGLDisplay _display;
+    EGLSurface _surface;
+    EGLConfig _config;
+    EGLContext _context;
+}
+@end
+
+@implementation AsyncGLContext : NSObject
+- (instancetype)initWithAPI:(EGLRenderingAPI)api display:(EGLDisplay)display surface:(EGLSurface)surface config:(EGLConfig)config context:(EGLContext)context {
+    self = [super init];
+    if (self) {
+        _api = api;
+        _display = display;
+        _surface = surface;
+        _config = config;
+        _context = context;
+    }
+    return self;
+}
+
++ (EGLContext)createEGLContextWithDisplay:(EGLDisplay)display api:(EGLRenderingAPI)api sharedContext:(EGLContext)sharedContext config:(EGLConfig*)config depthSize:(EGLint)depthSize msaa:(BOOL*)msaa {
+    EGLint multisampleAttribs[] = {
+        EGL_BLUE_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_RED_SIZE, 8,
+        EGL_DEPTH_SIZE, depthSize,
+        EGL_SAMPLES, 4,
+        EGL_SAMPLE_BUFFERS, 1,
+        EGL_NONE
+    };
+    EGLint attribs[] = {
+        EGL_BLUE_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_RED_SIZE, 8,
+        EGL_DEPTH_SIZE, depthSize,
+        EGL_NONE
+    };
+
+    EGLint numConfigs;
+    if (*msaa) {
+        // Try to enable multisample but fallback if not available
+        if (!eglChooseConfig(display, multisampleAttribs, config, 1, &numConfigs)) {
+            *msaa = NO;
+            NSLog(@"eglChooseConfig() returned error %d", eglGetError());
+            if (!eglChooseConfig(display, attribs, config, 1, &numConfigs)) {
+                NSLog(@"eglChooseConfig() returned error %d", eglGetError());
+                return EGL_NO_CONTEXT;
+            }
+        }
+    } else {
+        if (!eglChooseConfig(display, attribs, config, 1, &numConfigs)) {
+            NSLog(@"eglChooseConfig() returned error %d", eglGetError());
+            return EGL_NO_CONTEXT;
+        }
+    }
+
+    // Init context
+    int ctxMajorVersion = 2;
+    int ctxMinorVersion = 0;
+    switch (api)
+    {
+        case kEGLRenderingAPIOpenGLES1:
+            ctxMajorVersion = 1;
+            ctxMinorVersion = 0;
+            break;
+        case kEGLRenderingAPIOpenGLES2:
+            ctxMajorVersion = 2;
+            ctxMinorVersion = 0;
+            break;
+        case kEGLRenderingAPIOpenGLES3:
+            ctxMajorVersion = 3;
+            ctxMinorVersion = 0;
+            break;
+        default:
+            NSLog(@"Unknown GL ES API %d", api);
+            return EGL_NO_CONTEXT;
+    }
+    EGLint ctxAttribs[] = { EGL_CONTEXT_MAJOR_VERSION, ctxMajorVersion, EGL_CONTEXT_MINOR_VERSION, ctxMinorVersion, EGL_NONE };
+
+    EGLContext eglContext = eglCreateContext(display, *config, sharedContext, ctxAttribs);
+    if (eglContext == EGL_NO_CONTEXT) {
+        NSLog(@"eglCreateContext() returned error %d", eglGetError());
+        return EGL_NO_CONTEXT;
+    }
+    return eglContext;
+}
+
+- (void)destroy {
+    if (_surface != EGL_NO_SURFACE) {
+        eglDestroySurface(_display, _surface);
+        _surface = EGL_NO_SURFACE;
+    }
+
+    if (_context != EGL_NO_CONTEXT) {
+        eglMakeCurrent(_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        eglDestroyContext(_display, _context);
+        _context = EGL_NO_CONTEXT;
+    }
+
+    if (_display != EGL_NO_DISPLAY) {
+        eglTerminate(_display);
+        _display = EGL_NO_DISPLAY;
+    }
+}
+
+- (void)makeRenderContextCurrent {
+    eglMakeCurrent(_display, _surface, _surface, _context);
+}
+
+- (void)preRender:(CGSize)size {}
+
+- (void)postRender:(CGSize)size {
+    eglSwapBuffers(_display, _surface);
+}
+
+@end
 #else
 #if TARGET_OSX_OR_CATALYST
 @import OpenGL.GL;
@@ -107,11 +226,7 @@ typedef enum EGLRenderingAPI : int
 @property (nonatomic) GLsizei sampleCount;
 #ifdef USE_EGL
 @property (nonatomic) CAMetalLayer *metalLayer;
-@property (nonatomic) EGLRenderingAPI internalAPI;
-@property (nonatomic) EGLDisplay display;
-@property (nonatomic) EGLSurface renderSurface;
-@property (nonatomic) EGLConfig renderConfig;
-@property (nonatomic) EGLContext renderContext;
+@property (nonatomic) AsyncGLContext *context;
 #else
 @property (nonatomic) GLuint framebuffer;
 @property (nonatomic) GLuint depthBuffer;
@@ -219,7 +334,7 @@ typedef enum EGLRenderingAPI : int
 #pragma mark - interfaces
 - (void)makeRenderContextCurrent {
 #ifdef USE_EGL
-    eglMakeCurrent(_display, _renderSurface, _renderSurface, _renderContext);
+    [_context makeRenderContextCurrent];
 #else
 #if !TARGET_OSX_OR_CATALYST
     [EAGLContext setCurrentContext:_renderContext];
@@ -276,7 +391,7 @@ typedef enum EGLRenderingAPI : int
         [self makeRenderContextCurrent];
         [self _drawGL:size];
     #ifdef USE_EGL
-        eglSwapBuffers(_display, _renderSurface);
+        [_context postRender:size];
     #else
         glFlush();
     #if !TARGET_OSX_OR_CATALYST
@@ -301,10 +416,7 @@ typedef enum EGLRenderingAPI : int
     _isObservingNotifications = NO;
     _sampleCount = 0;
 #ifdef USE_EGL
-    _internalAPI = _api == AsyncGLAPIOpenGLES3 ? kEGLRenderingAPIOpenGLES3 : kEGLRenderingAPIOpenGLES2;
-    _display = EGL_NO_DISPLAY;
-    _renderSurface = EGL_NO_SURFACE;
-    _renderContext = EGL_NO_CONTEXT;
+    _context = [[AsyncGLContext alloc] initWithAPI:_api == AsyncGLAPIOpenGLES3 ? kEGLRenderingAPIOpenGLES3 : kEGLRenderingAPIOpenGLES2 display:EGL_NO_DISPLAY surface:EGL_NO_SURFACE config:0 context:EGL_NO_CONTEXT];
 #else
 #if !TARGET_OSX_OR_CATALYST
     _internalAPI = _api == AsyncGLAPIOpenGLES3 ? kEAGLRenderingAPIOpenGLES3 : kEAGLRenderingAPIOpenGLES2;
@@ -442,74 +554,6 @@ typedef enum EGLRenderingAPI : int
 }
 
 #pragma mark - context creation
-#ifdef USE_EGL
-- (EGLContext)createEGLContextWithDisplay:(EGLDisplay)display api:(EGLRenderingAPI)api sharedContext:(EGLContext)sharedContext config:(EGLConfig*)config depthSize:(EGLint)depthSize msaa:(BOOL*)msaa {
-    EGLint multisampleAttribs[] = {
-        EGL_BLUE_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_RED_SIZE, 8,
-        EGL_DEPTH_SIZE, depthSize,
-        EGL_SAMPLES, 4,
-        EGL_SAMPLE_BUFFERS, 1,
-        EGL_NONE
-    };
-    EGLint attribs[] = {
-        EGL_BLUE_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_RED_SIZE, 8,
-        EGL_DEPTH_SIZE, depthSize,
-        EGL_NONE
-    };
-
-    EGLint numConfigs;
-    if (*msaa) {
-        // Try to enable multisample but fallback if not available
-        if (!eglChooseConfig(display, multisampleAttribs, config, 1, &numConfigs)) {
-            *msaa = NO;
-            NSLog(@"eglChooseConfig() returned error %d", eglGetError());
-            if (!eglChooseConfig(display, attribs, config, 1, &numConfigs)) {
-                NSLog(@"eglChooseConfig() returned error %d", eglGetError());
-                return EGL_NO_CONTEXT;
-            }
-        }
-    } else {
-        if (!eglChooseConfig(display, attribs, config, 1, &numConfigs)) {
-            NSLog(@"eglChooseConfig() returned error %d", eglGetError());
-            return EGL_NO_CONTEXT;
-        }
-    }
-
-    // Init context
-    int ctxMajorVersion = 2;
-    int ctxMinorVersion = 0;
-    switch (api)
-    {
-        case kEGLRenderingAPIOpenGLES1:
-            ctxMajorVersion = 1;
-            ctxMinorVersion = 0;
-            break;
-        case kEGLRenderingAPIOpenGLES2:
-            ctxMajorVersion = 2;
-            ctxMinorVersion = 0;
-            break;
-        case kEGLRenderingAPIOpenGLES3:
-            ctxMajorVersion = 3;
-            ctxMinorVersion = 0;
-            break;
-        default:
-            NSLog(@"Unknown GL ES API %d", api);
-            return EGL_NO_CONTEXT;
-    }
-    EGLint ctxAttribs[] = { EGL_CONTEXT_MAJOR_VERSION, ctxMajorVersion, EGL_CONTEXT_MINOR_VERSION, ctxMinorVersion, EGL_NONE };
-
-    EGLContext eglContext = eglCreateContext(display, *config, sharedContext, ctxAttribs);
-    if (eglContext == EGL_NO_CONTEXT) {
-        NSLog(@"eglCreateContext() returned error %d", eglGetError());
-        return EGL_NO_CONTEXT;
-    }
-    return eglContext;
-}
-#endif
 
 - (void)createContexts {
 #ifdef USE_EGL
@@ -568,31 +612,31 @@ typedef enum EGLRenderingAPI : int
 - (BOOL)createRenderContext {
 #ifdef USE_EGL
     EGLAttrib displayAttribs[] = { EGL_NONE };
-    _display = eglGetPlatformDisplay(EGL_PLATFORM_ANGLE_ANGLE, NULL, displayAttribs);
-    if (_display == EGL_NO_DISPLAY) {
+    _context->_display = eglGetPlatformDisplay(EGL_PLATFORM_ANGLE_ANGLE, NULL, displayAttribs);
+    if (_context->_display == EGL_NO_DISPLAY) {
         NSLog(@"eglGetPlatformDisplay() returned error %d", eglGetError());
         return NO;
     }
 
-    if (!eglInitialize(_display, NULL, NULL)) {
+    if (!eglInitialize(_context->_display, NULL, NULL)) {
         NSLog(@"eglInitialize() returned error %d", eglGetError());
         return NO;
     }
 
-    _renderContext = [self createEGLContextWithDisplay:_display api:_internalAPI sharedContext:EGL_NO_CONTEXT config:&_renderConfig depthSize:24 msaa:&_msaaEnabled];
+    _context->_context = [AsyncGLContext createEGLContextWithDisplay:_context->_display api:_context->_api sharedContext:EGL_NO_CONTEXT config:&_context->_config depthSize:24 msaa:&_msaaEnabled];
 
     if (_msaaEnabled) {
         EGLint numSamples;
-        if (eglGetConfigAttrib(_display, _renderConfig, EGL_SAMPLES, &numSamples) && numSamples > 1)
+        if (eglGetConfigAttrib(_context->_display, _context->_config, EGL_SAMPLES, &numSamples) && numSamples > 1)
             _sampleCount = (GLsizei)numSamples;
     }
 
-    if (_renderContext == EGL_NO_CONTEXT)
+    if (_context->_context == EGL_NO_CONTEXT)
         return NO;
 
-    _renderSurface = eglCreateWindowSurface(_display, _renderConfig, (__bridge EGLNativeWindowType)(_metalLayer), NULL);
+    _context->_surface = eglCreateWindowSurface(_context->_display, _context->_config, (__bridge EGLNativeWindowType)(_metalLayer), NULL);
 
-    if (_renderSurface == EGL_NO_SURFACE) {
+    if (_context->_surface == EGL_NO_SURFACE) {
         NSLog(@"eglCreateWindowSurface() returned error %d", eglGetError());
         return NO;
     }
@@ -603,7 +647,7 @@ typedef enum EGLRenderingAPI : int
     });
 
     [self makeRenderContextCurrent];
-    eglSwapInterval(_display, 0);
+    eglSwapInterval(_context->_display, 0);
 
     return [self setupGL:size];
 #else
@@ -898,21 +942,8 @@ typedef enum EGLRenderingAPI : int
 
 - (void)destroyRenderContext {
 #ifdef USE_EGL
-    if (_renderSurface != EGL_NO_SURFACE) {
-        eglDestroySurface(_display, _renderSurface);
-        _renderSurface = EGL_NO_SURFACE;
-    }
-
-    if (_renderContext != EGL_NO_CONTEXT) {
-        eglMakeCurrent(_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        eglDestroyContext(_display, _renderContext);
-        _renderContext = EGL_NO_CONTEXT;
-    }
-
-    if (_display != EGL_NO_DISPLAY) {
-        eglTerminate(_display);
-        _display = EGL_NO_DISPLAY;
-    }
+    [_context destroy];
+    _context = nil;
 #else
 #if TARGET_OSX_OR_CATALYST
     CGLReleaseContext(_renderContext);
