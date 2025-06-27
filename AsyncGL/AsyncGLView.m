@@ -7,6 +7,8 @@
 
 #import "AsyncGLView+Private.h"
 
+static const NSUInteger kDrawableCount = 2;
+
 typedef NS_OPTIONS(NSUInteger, AsyncGLViewEvent) {
     AsyncGLViewEventNone                = 0,
     AsyncGLViewEventCreateRenderContext = 1 << 0,
@@ -32,17 +34,18 @@ typedef NS_ENUM(NSUInteger, AsyncGLViewContextState) {
 #define USE_EGL
 #endif
 
-#ifdef USE_EGL
 #if TARGET_OS_OSX
-@import QuartzCore.CAMetalLayer;
+@import QuartzCore.CATransaction;
 #endif
+
+#ifdef USE_EGL
 @import libGLESv2;
 @import libEGL;
+@import Metal;
 
 /* EGL rendering API */
 typedef enum EGLRenderingAPI : int
 {
-    kEGLRenderingAPIOpenGLES1 = 1,
     kEGLRenderingAPIOpenGLES2 = 2,
     kEGLRenderingAPIOpenGLES3 = 3,
 } EGLRenderingAPI;
@@ -50,9 +53,6 @@ typedef enum EGLRenderingAPI : int
 #else
 @import IOSurface;
 #if TARGET_OSX_OR_CATALYST
-#if TARGET_OS_OSX
-@import QuartzCore.CATransaction;
-#endif
 @import OpenGL.GL;
 @import OpenGL.GL3;
 #else
@@ -61,6 +61,39 @@ typedef enum EGLRenderingAPI : int
 @import OpenGLES.EAGLIOSurface;
 #endif
 #endif
+
+@interface AsyncGLDrawable : NSObject
+@property (nonatomic) IOSurfaceRef ioSurface;
+@property (nonatomic) GLuint screenColorTexture;
+#ifdef USE_EGL
+@property (nonatomic) EGLImageKHR screenColorImage;
+#endif
+@end
+
+@implementation AsyncGLDrawable
+
+#ifdef USE_EGL
+- (instancetype)initWithIOSurface:(IOSurfaceRef)ioSurface screenColorTexture:(GLuint)screenColorTexture screenColorImage:(EGLImageKHR)screenColorImage {
+    self = [super init];
+    if (self) {
+        _ioSurface = ioSurface;
+        _screenColorTexture = screenColorTexture;
+        _screenColorImage = screenColorImage;
+    }
+    return self;
+}
+#else
+- (instancetype)initWithIOSurface:(IOSurfaceRef)ioSurface screenColorTexture:(GLuint)screenColorTexture {
+    self = [super init];
+    if (self) {
+        _ioSurface = ioSurface;
+        _screenColorTexture = screenColorTexture;
+    }
+    return self;
+}
+#endif
+
+@end
 
 @interface AsyncGLView () {
     BOOL _msaaEnabled;
@@ -75,23 +108,22 @@ typedef enum EGLRenderingAPI : int
 @property (nonatomic) AsyncGLViewContextState contextState;
 @property (nonatomic) BOOL requestExitThread;
 @property (nonatomic) GLsizei sampleCount;
-#ifdef USE_EGL
-@property (nonatomic) CAMetalLayer *metalLayer;
-@property (nonatomic) EGLRenderingAPI internalAPI;
-@property (nonatomic) EGLDisplay display;
-@property (nonatomic) EGLSurface renderSurface;
-@property (nonatomic) EGLConfig renderConfig;
-@property (nonatomic) EGLContext renderContext;
-#else
 @property (nonatomic) CGSize savedBufferSize;
-@property (nonatomic) IOSurfaceRef ioSurface;
-@property (nonatomic) GLuint screenColorTexture;
 @property (nonatomic) GLuint screenDepthBuffer;
 @property (nonatomic) GLuint screenFrameBuffer;
 @property (nonatomic) GLuint sampleColorBuffer;
 @property (nonatomic) GLuint sampleDepthBuffer;
 @property (nonatomic) GLuint sampleFrameBuffer;
 @property (nonatomic) CALayer *glLayer;
+@property (nonatomic) NSMutableArray<AsyncGLDrawable *> *availableDrawables;
+@property (nonatomic) NSUInteger nextDrawableIndex;
+#ifdef USE_EGL
+@property (nonatomic) EGLRenderingAPI internalAPI;
+@property (nonatomic) EGLDisplay display;
+@property (nonatomic) EGLConfig renderConfig;
+@property (nonatomic) EGLContext renderContext;
+@property (nonatomic) id<MTLDevice> metalDevice;
+#else
 #if !TARGET_OSX_OR_CATALYST
 @property (nonatomic) EAGLRenderingAPI internalAPI;
 @property (nonatomic) EAGLContext *renderContext;
@@ -110,19 +142,11 @@ typedef enum EGLRenderingAPI : int
 
 #if !TARGET_OS_OSX
 + (Class)layerClass {
-#ifdef USE_EGL
-    return [CAMetalLayer class];
-#else
     return [CALayer class];
-#endif
 }
 #else
 - (CALayer *)makeBackingLayer {
-#ifdef USE_EGL
-    return [CAMetalLayer layer];
-#else
     return [CALayer layer];
-#endif
 }
 #endif
 
@@ -175,7 +199,7 @@ typedef enum EGLRenderingAPI : int
 #pragma mark - interfaces
 - (void)makeRenderContextCurrent {
 #ifdef USE_EGL
-    eglMakeCurrent(_display, _renderSurface, _renderSurface, _renderContext);
+    eglMakeCurrent(_display, EGL_NO_SURFACE, EGL_NO_SURFACE, _renderContext);
 #else
 #if !TARGET_OSX_OR_CATALYST
     [EAGLContext setCurrentContext:_renderContext];
@@ -217,21 +241,12 @@ typedef enum EGLRenderingAPI : int
     os_unfair_lock_unlock(&_renderLock);
 
     if (shouldRender) {
-#ifndef USE_EGL
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-#endif
-
         [self makeRenderContextCurrent];
-        [self _drawGL:size];
-#ifdef USE_EGL
-        eglSwapBuffers(_display, _renderSurface);
-#else
+        AsyncGLDrawable *drawable = [self _drawGL:size];
         glFlush();
-        [_glLayer performSelector:@selector(setContentsChanged)];
-        [CATransaction commit];
-        [CATransaction flush];
-#endif
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.glLayer.contents = (__bridge id)(drawable.ioSurface);
+        });
     }
 }
 
@@ -245,12 +260,14 @@ typedef enum EGLRenderingAPI : int
     _tasks = [NSMutableArray array];
     _isObservingNotifications = NO;
     _sampleCount = 0;
+    _availableDrawables = nil;
+    _nextDrawableIndex = 0;
 #ifdef USE_EGL
     _internalAPI = _api == AsyncGLAPIOpenGLES3 ? kEGLRenderingAPIOpenGLES3 : kEGLRenderingAPIOpenGLES2;
     _display = EGL_NO_DISPLAY;
-    _renderSurface = EGL_NO_SURFACE;
     _renderContext = EGL_NO_CONTEXT;
     _renderConfig = 0;
+    _metalDevice = nil;
 #else
 #if !TARGET_OSX_OR_CATALYST
     _internalAPI = _api == AsyncGLAPIOpenGLES3 ? kEAGLRenderingAPIOpenGLES3 : kEAGLRenderingAPIOpenGLES2;
@@ -271,8 +288,6 @@ typedef enum EGLRenderingAPI : int
     _renderContext = NULL;
 #endif
     _savedBufferSize = CGSizeZero;
-    _ioSurface = nil;
-    _screenColorTexture = 0;
     _screenDepthBuffer = 0;
     _screenFrameBuffer = 0;
     _sampleColorBuffer = 0;
@@ -287,12 +302,8 @@ typedef enum EGLRenderingAPI : int
     // Set layer properties
     self.layer.opaque = YES;
 
-#ifdef USE_EGL
-    _metalLayer = (CAMetalLayer *)self.layer;
-#else
     _glLayer = self.layer;
     _glLayer.transform = CATransform3DMakeScale(1, -1, 1);
-#endif
 
     _event = AsyncGLViewEventNone;
     _condition = [[NSCondition alloc] init];
@@ -374,75 +385,6 @@ typedef enum EGLRenderingAPI : int
 }
 
 #pragma mark - context creation
-#ifdef USE_EGL
-- (EGLContext)createEGLContextWithDisplay:(EGLDisplay)display api:(EGLRenderingAPI)api sharedContext:(EGLContext)sharedContext config:(EGLConfig*)config depthSize:(EGLint)depthSize msaa:(BOOL*)msaa {
-    EGLint multisampleAttribs[] = {
-        EGL_BLUE_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_RED_SIZE, 8,
-        EGL_DEPTH_SIZE, depthSize,
-        EGL_SAMPLES, 4,
-        EGL_SAMPLE_BUFFERS, 1,
-        EGL_NONE
-    };
-    EGLint attribs[] = {
-        EGL_BLUE_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_RED_SIZE, 8,
-        EGL_DEPTH_SIZE, depthSize,
-        EGL_NONE
-    };
-
-    EGLint numConfigs;
-    if (*msaa) {
-        // Try to enable multisample but fallback if not available
-        if (!eglChooseConfig(display, multisampleAttribs, config, 1, &numConfigs)) {
-            *msaa = NO;
-            NSLog(@"eglChooseConfig() returned error %d", eglGetError());
-            if (!eglChooseConfig(display, attribs, config, 1, &numConfigs)) {
-                NSLog(@"eglChooseConfig() returned error %d", eglGetError());
-                return EGL_NO_CONTEXT;
-            }
-        }
-    } else {
-        if (!eglChooseConfig(display, attribs, config, 1, &numConfigs)) {
-            NSLog(@"eglChooseConfig() returned error %d", eglGetError());
-            return EGL_NO_CONTEXT;
-        }
-    }
-
-    // Init context
-    int ctxMajorVersion = 2;
-    int ctxMinorVersion = 0;
-    switch (api)
-    {
-        case kEGLRenderingAPIOpenGLES1:
-            ctxMajorVersion = 1;
-            ctxMinorVersion = 0;
-            break;
-        case kEGLRenderingAPIOpenGLES2:
-            ctxMajorVersion = 2;
-            ctxMinorVersion = 0;
-            break;
-        case kEGLRenderingAPIOpenGLES3:
-            ctxMajorVersion = 3;
-            ctxMinorVersion = 0;
-            break;
-        default:
-            NSLog(@"Unknown GL ES API %d", api);
-            return EGL_NO_CONTEXT;
-    }
-    EGLint ctxAttribs[] = { EGL_CONTEXT_MAJOR_VERSION, ctxMajorVersion, EGL_CONTEXT_MINOR_VERSION, ctxMinorVersion, EGL_NONE };
-
-    EGLContext eglContext = eglCreateContext(display, *config, sharedContext, ctxAttribs);
-    if (eglContext == EGL_NO_CONTEXT) {
-        NSLog(@"eglCreateContext() returned error %d", eglGetError());
-        return EGL_NO_CONTEXT;
-    }
-    return eglContext;
-}
-#endif
-
 - (void)createContexts {
     [_condition lock];
     _event = AsyncGLViewEventCreateRenderContext;
@@ -464,35 +406,44 @@ typedef enum EGLRenderingAPI : int
         return NO;
     }
 
-    _renderContext = [self createEGLContextWithDisplay:_display api:_internalAPI sharedContext:EGL_NO_CONTEXT config:&_renderConfig depthSize:24 msaa:&_msaaEnabled];
+    EGLint configAttribs[] = {
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_NONE,
+    };
 
-    if (_msaaEnabled) {
-        EGLint numSamples;
-        if (eglGetConfigAttrib(_display, _renderConfig, EGL_SAMPLES, &numSamples) && numSamples > 1)
-            _sampleCount = (GLsizei)numSamples;
-    }
-
-    if (_renderContext == EGL_NO_CONTEXT)
-        return NO;
-
-    _renderSurface = eglCreateWindowSurface(_display, _renderConfig, (__bridge EGLNativeWindowType)(_metalLayer), NULL);
-
-    if (_renderSurface == EGL_NO_SURFACE) {
-        NSLog(@"eglCreateWindowSurface() returned error %d", eglGetError());
+    EGLint numConfigs;
+    if (!eglChooseConfig(_display, configAttribs, &_renderConfig, 1, &numConfigs)) {
+        NSLog(@"eglChooseConfig() returned error %d", eglGetError());
         return NO;
     }
 
-    __block CGSize size;
-    dispatch_sync(dispatch_get_main_queue(), ^{
-        size = self.frame.size;
-    });
+    // Init context
+    int requestedMajorVersion = 2;
+    int requestedMinorVersion = 0;
+    switch (_internalAPI)
+    {
+    case kEGLRenderingAPIOpenGLES2:
+        requestedMajorVersion = 2;
+        requestedMinorVersion = 0;
+        break;
+    case kEGLRenderingAPIOpenGLES3:
+        requestedMajorVersion = 3;
+        requestedMinorVersion = 0;
+        break;
+    default:
+        NSLog(@"Unknown GL ES API %d", _internalAPI);
+        return NO;
+    }
 
-    [self makeRenderContextCurrent];
-    eglSwapInterval(_display, 0);
-
-    return [self setupGL:size];
-#else
-#if !TARGET_OSX_OR_CATALYST
+    EGLint ctxAttribs[] = { EGL_CONTEXT_MAJOR_VERSION, requestedMajorVersion, EGL_CONTEXT_MINOR_VERSION, requestedMinorVersion, EGL_NONE };
+    _renderContext = eglCreateContext(_display, _renderConfig, NULL, ctxAttribs);
+    if (_renderContext == EGL_NO_CONTEXT) {
+        NSLog(@"eglCreateContext() returned error %d", eglGetError());
+        return EGL_NO_CONTEXT;
+    }
+#elif !TARGET_OSX_OR_CATALYST
     _renderContext = [[EAGLContext alloc] initWithAPI:_internalAPI];
     if (_renderContext == nil)
         return NO;
@@ -515,8 +466,41 @@ typedef enum EGLRenderingAPI : int
 
     [self makeRenderContextCurrent];
 
+#ifdef USE_EGL
+    // Actual GLES version might be different than what is requested
+    EGLint majorVersion = 0;
+    eglQueryContext(_display, _renderContext, EGL_CONTEXT_CLIENT_VERSION, &majorVersion);
+
+    switch (majorVersion)
+    {
+    case 2:
+        _internalAPI = kEGLRenderingAPIOpenGLES2;
+        break;
+    case 3:
+        _internalAPI = kEGLRenderingAPIOpenGLES2;
+        break;
+    default:
+        NSLog(@"Unknown GL ES API Major Version %d", majorVersion);
+        return NO;
+    }
+
+    EGLAttrib angleDevice = 0;
+    if (eglQueryDisplayAttribEXT(_display, EGL_DEVICE_EXT, &angleDevice) != EGL_TRUE) {
+        NSLog(@"eglQueryDisplayAttribEXT() returned error %d", eglGetError());
+        return NO;
+    }
+
+    EGLAttrib device = 0;
+    if (eglQueryDeviceAttribEXT((EGLDeviceEXT)angleDevice, EGL_METAL_DEVICE_ANGLE, &device) != EGL_TRUE) {
+        NSLog(@"eglQueryDeviceAttribEXT() returned error %d", eglGetError());
+        return NO;
+    }
+
+    _metalDevice = (__bridge id<MTLDevice>)(void *)device;
+#endif
+
     if (_msaaEnabled) {
-#if TARGET_OSX_OR_CATALYST
+#if !defined(USE_EGL) && TARGET_OSX_OR_CATALYST
         glEnable(GL_MULTISAMPLE);
 #endif
         GLint numSamples;
@@ -534,16 +518,15 @@ typedef enum EGLRenderingAPI : int
         size = CGSizeMake(frameSize.width * scale, frameSize.height * scale);
     });
     return [self createRenderBuffers:size];
-#endif
 }
 
-#ifndef USE_EGL
 #pragma mark - buffer creation
 - (BOOL)createRenderBuffers:(CGSize)size {
     glGenFramebuffers(1, &_screenFrameBuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, _screenFrameBuffer);
 
     [self updateBuffersSize:size];
+    [self bindNextDrawable];
 
     GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (status != GL_FRAMEBUFFER_COMPLETE) {
@@ -553,26 +536,27 @@ typedef enum EGLRenderingAPI : int
 
     return [self setupGL:size];
 }
+
+- (AsyncGLDrawable *)bindNextDrawable {
+    AsyncGLDrawable *drawable = [_availableDrawables objectAtIndex:_nextDrawableIndex];
+
+#if defined(USE_EGL) || !TARGET_OSX_OR_CATALYST
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, drawable.screenColorTexture, 0);
+#else
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE_ARB, drawable.screenColorTexture, 0);
 #endif
 
-- (void)updateBuffersSize:(CGSize)size {
-#ifndef USE_EGL
-    if (CGSizeEqualToSize(_savedBufferSize, size))
-        return;
+    _nextDrawableIndex = (_nextDrawableIndex + 1) % kDrawableCount;
+    return drawable;
+}
 
-    _savedBufferSize = size;
-
-    GLsizei width = (GLsizei)size.width;
-    GLsizei height = (GLsizei)size.height;
-
-    if (_screenColorTexture != 0)
-        glDeleteTextures(1, &_screenColorTexture);
-
-    glGenTextures(1, &_screenColorTexture);
-#if TARGET_OSX_OR_CATALYST
-    glBindTexture(GL_TEXTURE_RECTANGLE_ARB, _screenColorTexture);
+- (AsyncGLDrawable *)createDrawable:(CGSize)size {
+    GLuint screenColorTexture;
+    glGenTextures(1, &screenColorTexture);
+#if defined(USE_EGL) || !TARGET_OSX_OR_CATALYST
+    glBindTexture(GL_TEXTURE_2D, screenColorTexture);
 #else
-    glBindTexture(GL_TEXTURE_2D, _screenColorTexture);
+    glBindTexture(GL_TEXTURE_RECTANGLE_ARB, screenColorTexture);
 #endif
 
     NSDictionary *desc = @{
@@ -582,23 +566,76 @@ typedef enum EGLRenderingAPI : int
         (NSString *)kIOSurfacePixelFormat: @(kCVPixelFormatType_32BGRA),
     };
 
-    IOSurfaceRef oldSurface = _ioSurface;
-    _ioSurface = IOSurfaceCreate((__bridge CFDictionaryRef)desc);
+    IOSurfaceRef ioSurface = IOSurfaceCreate((__bridge CFDictionaryRef)desc);
 
-#if TARGET_OSX_OR_CATALYST
-    CGLTexImageIOSurface2D(_renderContext, GL_TEXTURE_RECTANGLE_ARB, GL_RGBA, (GLsizei)size.width, (GLsizei)size.height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, _ioSurface, 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE_ARB, _screenColorTexture, 0);
+#ifdef USE_EGL
+    MTLTextureDescriptor *textureDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:(NSUInteger)size.width height:(NSUInteger)size.height mipmapped:NO];
+    id<MTLTexture> metalTexture = [_metalDevice newTextureWithDescriptor:textureDescriptor iosurface:ioSurface plane:0];
+
+    const EGLint imageAttributes[] = { EGL_NONE };
+    EGLImageKHR screenColorImage = eglCreateImageKHR(_display, EGL_NO_CONTEXT, EGL_METAL_TEXTURE_ANGLE, (__bridge EGLClientBuffer)metalTexture, imageAttributes);
+    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, screenColorImage);
 #else
-    [_renderContext texImageIOSurface:_ioSurface target:GL_TEXTURE_2D internalFormat:GL_RGBA width:(GLsizei)size.width height:(GLsizei)size.height format:GL_BGRA type:GL_UNSIGNED_BYTE plane:0];
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _screenColorTexture, 0);
+#if TARGET_OSX_OR_CATALYST
+    CGLTexImageIOSurface2D(_renderContext, GL_TEXTURE_RECTANGLE_ARB, GL_RGBA, (GLsizei)size.width, (GLsizei)size.height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, ioSurface, 0);
+#else
+    [_renderContext texImageIOSurface:ioSurface target:GL_TEXTURE_2D internalFormat:GL_RGBA width:(GLsizei)size.width height:(GLsizei)size.height format:GL_BGRA type:GL_UNSIGNED_BYTE plane:0];
+#endif
 #endif
 
+#ifdef USE_EGL
+    AsyncGLDrawable *drawable = [[AsyncGLDrawable alloc] initWithIOSurface:ioSurface screenColorTexture:screenColorTexture screenColorImage:screenColorImage];
+#else
+    AsyncGLDrawable *drawable = [[AsyncGLDrawable alloc] initWithIOSurface:ioSurface screenColorTexture:screenColorTexture];
+#endif
+    return drawable;
+}
+
+- (void)updateBuffersSize:(CGSize)size {
+    if (CGSizeEqualToSize(_savedBufferSize, size))
+        return;
+
+    _savedBufferSize = size;
+
+    GLsizei width = (GLsizei)size.width;
+    GLsizei height = (GLsizei)size.height;
+
+    NSArray *obsoleteDrawables = _availableDrawables;
+    _availableDrawables = [NSMutableArray arrayWithCapacity:2];
+
+    for (AsyncGLDrawable *drawable in obsoleteDrawables)
+    {
+        GLuint screenColorTexture = drawable.screenColorTexture;
+        if (screenColorTexture != 0) {
+            glDeleteTextures(1, &screenColorTexture);
+        }
+
+#ifdef USE_EGL
+        EGLImageKHR screenColorImage = drawable.screenColorImage;
+        if (screenColorImage != 0) {
+            eglDestroyImageKHR(_display, &screenColorImage);
+        }
+#endif
+    }
+
     dispatch_sync(dispatch_get_main_queue(), ^{
-        self.glLayer.contents = (__bridge id)self.ioSurface;
+        id contents = self.layer.contents;
+        if (contents != nil && CFGetTypeID((__bridge CFTypeRef)contents) == IOSurfaceGetTypeID()) {
+            IOSurfaceRef surface = (__bridge IOSurfaceRef)contents;
+            self.layer.contents = [[CIImage alloc] initWithIOSurface:surface];
+        } else {
+            self.layer.contents = nil;
+        }
     });
 
-    if (oldSurface != NULL)
-        CFRelease(oldSurface);
+    for (AsyncGLDrawable *drawable in obsoleteDrawables) {
+        CFRelease(drawable.ioSurface);
+    }
+
+    for (NSUInteger i = 0; i < kDrawableCount; ++i)
+    {
+        [_availableDrawables addObject:[self createDrawable:size]];
+    }
 
     if (_msaaEnabled) {
         if (_sampleFrameBuffer == 0)
@@ -622,7 +659,6 @@ typedef enum EGLRenderingAPI : int
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, _screenDepthBuffer);
     }
-#endif
 }
 
 #pragma mark - internal implementation
@@ -630,13 +666,11 @@ typedef enum EGLRenderingAPI : int
     return [_delegate _prepareGL:size samples:(NSInteger)_sampleCount];
 }
 
-- (void)_drawGL:(CGSize)size
+- (AsyncGLDrawable *)_drawGL:(CGSize)size
 {
     [self updateBuffersSize:size];
+    AsyncGLDrawable *drawable = [self bindNextDrawable];
 
-#if defined(USE_EGL)
-    [_delegate _drawGL:size];
-#else
     if (_msaaEnabled) {
         GLsizei width = (GLsizei)size.width;
         GLsizei height = (GLsizei)size.height;
@@ -647,7 +681,13 @@ typedef enum EGLRenderingAPI : int
         glBindFramebuffer(GL_READ_FRAMEBUFFER, _sampleFrameBuffer);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, _screenFrameBuffer);
 
-#if TARGET_OSX_OR_CATALYST
+#if defined(USE_EGL)
+        GLenum attachments[] = { GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT };
+        glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        if (_internalAPI == kEGLRenderingAPIOpenGLES3)
+            glInvalidateFramebuffer(GL_READ_FRAMEBUFFER, 2, attachments);
+#else
+#if TARGET_OSX_OR_CATALYST || defined(USE_EGL)
         glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 #else
         GLenum attachments[] = { GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT };
@@ -659,10 +699,11 @@ typedef enum EGLRenderingAPI : int
             glInvalidateFramebuffer(GL_READ_FRAMEBUFFER, 2, attachments);
         }
 #endif
+#endif
     } else {
         [_delegate _drawGL:size];
     }
-#endif
+    return drawable;
 }
 
 #pragma mark - clear
@@ -684,7 +725,6 @@ typedef enum EGLRenderingAPI : int
 }
 
 - (void)clearResources {
-#ifndef USE_EGL
     if (_sampleFrameBuffer != 0) {
         glDeleteFramebuffers(1, &_sampleFrameBuffer);
         _sampleFrameBuffer = 0;
@@ -710,28 +750,35 @@ typedef enum EGLRenderingAPI : int
         _screenDepthBuffer = 0;
     }
 
-    if (_screenColorTexture != 0) {
-        glDeleteTextures(1, &_screenColorTexture);
-        _screenColorTexture = 0;
+    NSArray *obsoleteDrawables = _availableDrawables;
+    _availableDrawables = nil;
+
+    for (AsyncGLDrawable *drawable in obsoleteDrawables)
+    {
+        GLuint screenColorTexture = drawable.screenColorTexture;
+        if (screenColorTexture != 0) {
+            glDeleteTextures(1, &screenColorTexture);
+        }
+
+#ifdef USE_EGL
+        EGLImageKHR screenColorImage = drawable.screenColorImage;
+        if (screenColorImage != 0) {
+            eglDestroyImageKHR(_display, &screenColorImage);
+        }
+#endif
     }
 
-    if (_ioSurface != NULL) {
-        dispatch_sync(dispatch_get_main_queue(), ^{
-            _glLayer.contents = nil;
-        });
-        CFRelease(&_ioSurface);
-        _ioSurface = NULL;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        self.layer.contents = nil;
+    });
+
+    for (AsyncGLDrawable *drawable in obsoleteDrawables) {
+        CFRelease(drawable.ioSurface);
     }
-#endif
 }
 
 - (void)destroyRenderContext {
 #ifdef USE_EGL
-    if (_renderSurface != EGL_NO_SURFACE) {
-        eglDestroySurface(_display, _renderSurface);
-        _renderSurface = EGL_NO_SURFACE;
-    }
-
     if (_renderContext != EGL_NO_CONTEXT) {
         eglMakeCurrent(_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         eglDestroyContext(_display, _renderContext);
