@@ -40,6 +40,7 @@ typedef NS_ENUM(NSUInteger, AsyncGLViewContextState) {
 @import libGLESv2;
 @import libEGL;
 @import Metal;
+@import MetalFX;
 
 /* EGL rendering API */
 typedef enum EGLRenderingAPI : int
@@ -76,6 +77,7 @@ typedef enum EGLRenderingAPI : int
 @property (nonatomic) NSUInteger height;
 @property (nonatomic) id<MTLEvent> metalSharedEvent;
 @property (nonatomic) uint64_t signalValue;
+@property (nonatomic) id<MTLFXSpatialScaler> spatialScaler;
 
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithEGLColorImage:(EGLImageKHR)eglColorImage
@@ -91,7 +93,8 @@ typedef enum EGLRenderingAPI : int
                                 width:(NSUInteger)width
                                height:(NSUInteger)height
                      metalSharedEvent:(id<MTLEvent>)metalSharedEvent
-                          signalValue:(uint64_t)signalValue;
+                          signalValue:(uint64_t)signalValue
+                        spatialScaler:(id<MTLFXSpatialScaler>)spatialScaler;
 
 @end
 
@@ -110,7 +113,8 @@ typedef enum EGLRenderingAPI : int
                                 width:(NSUInteger)width
                                height:(NSUInteger)height
                      metalSharedEvent:(id<MTLEvent>)metalSharedEvent
-                          signalValue:(uint64_t)signalValue {
+                          signalValue:(uint64_t)signalValue
+                        spatialScaler:(id<MTLFXSpatialScaler>)spatialScaler {
     self = [super init];
     if (self) {
         _eglColorImage = eglColorImage;
@@ -127,6 +131,7 @@ typedef enum EGLRenderingAPI : int
         _height = height;
         _metalSharedEvent = metalSharedEvent;
         _signalValue = signalValue;
+        _spatialScaler = spatialScaler;
     }
     return self;
 }
@@ -924,6 +929,7 @@ typedef enum EGLRenderingAPI : int
     GLuint glSampleColorRenderBuffer;
     GLuint glSampleDepthRenderBuffer;
     GLuint glSampleFrameBuffer;
+    id<MTLFXSpatialScaler> spatialScaler;
 
     if (_renderResources == nil) {
         glGenFramebuffers(1, &glFrameBuffer);
@@ -979,11 +985,24 @@ typedef enum EGLRenderingAPI : int
             eglDestroyImageKHR(_display, _renderResources.eglDepthImage);
         }
 
-        MTLTextureDescriptor *texDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
+        MTLFXSpatialScalerDescriptor *scalerDescriptor = [[MTLFXSpatialScalerDescriptor alloc] init];
+        [scalerDescriptor setOutputWidth:width];
+        [scalerDescriptor setOutputHeight:height];
+        [scalerDescriptor setInputWidth:width / 2];
+        [scalerDescriptor setInputHeight:height / 2];
+        [scalerDescriptor setColorTextureFormat:MTLPixelFormatBGRA8Unorm];
+        [scalerDescriptor setOutputTextureFormat:MTLPixelFormatBGRA8Unorm];
+        [scalerDescriptor setColorProcessingMode:MTLFXSpatialScalerColorProcessingModeLinear];
+        spatialScaler = [scalerDescriptor newSpatialScalerWithDevice:_metalDevice];
+
+        NSUInteger inputWidth = [spatialScaler inputWidth];
+        NSUInteger inputHeight = [spatialScaler inputHeight];
+
+        MTLTextureDescriptor *texDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:inputWidth height:inputHeight mipmapped:NO];
         texDescriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
         texDescriptor.storageMode = MTLStorageModePrivate;
         metalColorTexture = [_metalDevice newTextureWithDescriptor:texDescriptor];
-        texDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:width height:height mipmapped:NO];
+        texDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:inputWidth height:inputHeight mipmapped:NO];
         texDescriptor.usage = MTLTextureUsageRenderTarget;
         texDescriptor.storageMode = MTLStorageModePrivate;
         metalDepthTexture = [_metalDevice newTextureWithDescriptor:texDescriptor];
@@ -1004,13 +1023,13 @@ typedef enum EGLRenderingAPI : int
             if (glSampleColorRenderBuffer == 0)
                 glGenRenderbuffers(1, &glSampleColorRenderBuffer);
             glBindRenderbuffer(GL_RENDERBUFFER, glSampleColorRenderBuffer);
-            glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, (GLsizei)width, (GLsizei)height);
+            glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, (GLsizei)inputWidth, (GLsizei)inputHeight);
 
             glSampleDepthRenderBuffer = _renderResources.glSampleDepthRenderBuffer;
             if (glSampleDepthRenderBuffer == 0)
                 glGenRenderbuffers(1, &glSampleDepthRenderBuffer);
             glBindRenderbuffer(GL_RENDERBUFFER, glSampleDepthRenderBuffer);
-            glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH_COMPONENT24, (GLsizei)width, (GLsizei)height);
+            glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH_COMPONENT24, (GLsizei)inputWidth, (GLsizei)inputHeight);
 
             glBindFramebuffer(GL_FRAMEBUFFER, glSampleFrameBuffer);
 
@@ -1033,9 +1052,10 @@ typedef enum EGLRenderingAPI : int
         glSampleDepthRenderBuffer = _renderResources.glSampleDepthRenderBuffer;
         metalColorTexture = _renderResources.metalColorTexture;
         metalDepthTexture = _renderResources.metalDepthTexture;
+        spatialScaler = _renderResources.spatialScaler;
     }
 
-    _renderResources = [[AsyncGLRendererResources alloc] initWithEGLColorImage:eglColorImage eglDepthImage:eglDepthImage glColorRenderBuffer:glColorRenderBuffer glDepthRenderBuffer:glDepthRenderBuffer glFrameBuffer:glFrameBuffer glSampleColorRenderBuffer:glSampleColorRenderBuffer glSampleDepthRenderBuffer:glSampleDepthRenderBuffer glSampleFrameBuffer:glSampleFrameBuffer metalColorTexture:metalColorTexture metalDepthTexture:metalDepthTexture width:width height:height metalSharedEvent:sharedEvent signalValue:signalValue];
+    _renderResources = [[AsyncGLRendererResources alloc] initWithEGLColorImage:eglColorImage eglDepthImage:eglDepthImage glColorRenderBuffer:glColorRenderBuffer glDepthRenderBuffer:glDepthRenderBuffer glFrameBuffer:glFrameBuffer glSampleColorRenderBuffer:glSampleColorRenderBuffer glSampleDepthRenderBuffer:glSampleDepthRenderBuffer glSampleFrameBuffer:glSampleFrameBuffer metalColorTexture:metalColorTexture metalDepthTexture:metalDepthTexture width:width height:height metalSharedEvent:sharedEvent signalValue:signalValue spatialScaler:spatialScaler];
 #endif
 }
 
@@ -1050,6 +1070,7 @@ typedef enum EGLRenderingAPI : int
 
 #ifdef USE_EGL
     if (_renderToMetalTexture) {
+        size = CGSizeMake([[_renderResources spatialScaler] inputWidth], [[_renderResources spatialScaler] inputHeight]);
         if (_msaaEnabled) {
             GLsizei width = (GLsizei)size.width;
             GLsizei height = (GLsizei)size.height;
@@ -1117,10 +1138,14 @@ typedef enum EGLRenderingAPI : int
         EGLSync sync = eglCreateSync(_display, EGL_SYNC_METAL_SHARED_EVENT_ANGLE, syncAttribs);
 
         [commandBuffer encodeWaitForEvent:sharedEvent value:signalValue];
+//
+//        id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+//        [blitEncoder copyFromTexture:[_renderResources metalColorTexture] toTexture:drawable.texture];
+//        [blitEncoder endEncoding];
 
-        id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
-        [blitEncoder copyFromTexture:[_renderResources metalColorTexture] toTexture:drawable.texture];
-        [blitEncoder endEncoding];
+        [[_renderResources spatialScaler] setColorTexture:[_renderResources metalColorTexture]];
+        [[_renderResources spatialScaler] setOutputTexture:[drawable texture]];
+        [[_renderResources spatialScaler] encodeToCommandBuffer:commandBuffer];
 
         signalValue += 1;
 
