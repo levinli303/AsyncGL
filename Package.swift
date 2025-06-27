@@ -46,6 +46,8 @@ let package = Package(
             publicHeadersPath: "include",
             cSettings: [
                 .define("GL_SILENCE_DEPRECATION"),
+                .define("GL_GLEXT_PROTOTYPES"),
+                .define("EGL_EGLEXT_PROTOTYPES"),
             ]
         )
     ]

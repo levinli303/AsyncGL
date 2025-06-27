@@ -34,14 +34,11 @@ typedef NS_ENUM(NSUInteger, AsyncGLViewContextState) {
 #endif
 
 #ifdef USE_EGL
-#define GL_GLEXT_PROTOTYPES
-#define GL_EXT_texture_border_clamp 0
-#define GL_EXT_separate_shader_objects 0
 #if TARGET_OS_OSX
 @import QuartzCore.CAMetalLayer;
 #endif
-#include <libGLESv2/libGLESv2.h>
-#include <libEGL/libEGL.h>
+@import libGLESv2;
+@import libEGL;
 
 /* EGL rendering API */
 typedef enum EGLRenderingAPI : int
@@ -744,7 +741,15 @@ typedef enum EGLRenderingAPI : int
     return [self setupGL:size];
 }
 
+#if !TARGET_OSX_OR_CATALYST
+- (void)makeMainContextCurrent {
+    [EAGLContext setCurrentContext:_mainContext];
+}
+#endif
+#endif
+
 - (void)updateBuffersSize:(CGSize)size {
+#ifndef USE_EGL
     if (CGSizeEqualToSize(_savedBufferSize, size))
         return;
 
@@ -779,14 +784,8 @@ typedef enum EGLRenderingAPI : int
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
     }
 #endif
-}
-
-#if !TARGET_OSX_OR_CATALYST
-- (void)makeMainContextCurrent {
-    [EAGLContext setCurrentContext:_mainContext];
-}
 #endif
-#endif
+}
 
 #pragma mark - internal implementation
 - (BOOL)setupGL:(CGSize)size {
@@ -795,18 +794,14 @@ typedef enum EGLRenderingAPI : int
 
 - (void)_drawGL:(CGSize)size
 {
-#ifdef USE_EGL
-    [_delegate _drawGL:size];
-#else
     [self updateBuffersSize:size];
 
-    GLsizei width = (GLsizei)size.width;
-    GLsizei height = (GLsizei)size.height;
-
-#if TARGET_OSX_OR_CATALYST
+#if TARGET_OSX_OR_CATALYST || defined(USE_EGL)
     [_delegate _drawGL:size];
 #else
     if (_msaaEnabled) {
+        GLsizei width = (GLsizei)size.width;
+        GLsizei height = (GLsizei)size.height;
         glBindFramebuffer(GL_FRAMEBUFFER, _sampleFramebuffer);
 
         [_delegate _drawGL:size];
@@ -825,7 +820,6 @@ typedef enum EGLRenderingAPI : int
     } else {
         [_delegate _drawGL:size];
     }
-#endif
 #endif
 }
 
