@@ -39,6 +39,7 @@ typedef NS_ENUM(NSUInteger, AsyncGLViewContextState) {
 #endif
 @import libGLESv2;
 @import libEGL;
+@import Metal;
 
 /* EGL rendering API */
 typedef enum EGLRenderingAPI : int
@@ -58,7 +59,79 @@ typedef enum EGLRenderingAPI : int
 #endif
 #endif
 
-#ifndef USE_EGL
+#ifdef USE_EGL
+@interface AsyncGLRendererResources : NSObject
+
+@property (nonatomic) EGLImageKHR eglColorImage;
+@property (nonatomic) EGLImageKHR eglDepthImage;
+@property (nonatomic) GLuint glColorRenderBuffer;
+@property (nonatomic) GLuint glDepthRenderBuffer;
+@property (nonatomic) GLuint glFrameBuffer;
+@property (nonatomic) GLuint glSampleColorRenderBuffer;
+@property (nonatomic) GLuint glSampleDepthRenderBuffer;
+@property (nonatomic) GLuint glSampleFrameBuffer;
+@property (nonatomic) id<MTLTexture> metalColorTexture;
+@property (nonatomic) id<MTLTexture> metalDepthTexture;
+@property (nonatomic) NSUInteger width;
+@property (nonatomic) NSUInteger height;
+@property (nonatomic) id<MTLEvent> metalSharedEvent;
+@property (nonatomic) uint64_t signalValue;
+
+- (instancetype)init NS_UNAVAILABLE;
+- (instancetype)initWithEGLColorImage:(EGLImageKHR)eglColorImage
+                        eglDepthImage:(EGLImageKHR)eglDepthImage
+                  glColorRenderBuffer:(GLuint)glColorRenderBuffer
+                  glDepthRenderBuffer:(GLuint)glDepthRenderBuffer
+                        glFrameBuffer:(GLuint)glFrameBuffer
+            glSampleColorRenderBuffer:(GLuint)glSampleColorRenderBuffer
+            glSampleDepthRenderBuffer:(GLuint)glSampleDepthRenderBuffer
+                  glSampleFrameBuffer:(GLuint)glSampleFrameBuffer
+                    metalColorTexture:(id<MTLTexture>)metalColorTexture
+                    metalDepthTexture:(id<MTLTexture>)metalDepthTexture
+                                width:(NSUInteger)width
+                               height:(NSUInteger)height
+                     metalSharedEvent:(id<MTLEvent>)metalSharedEvent
+                          signalValue:(uint64_t)signalValue;
+
+@end
+
+@implementation AsyncGLRendererResources
+
+- (instancetype)initWithEGLColorImage:(EGLImageKHR)eglColorImage
+                        eglDepthImage:(EGLImageKHR)eglDepthImage
+                  glColorRenderBuffer:(GLuint)glColorRenderBuffer
+                  glDepthRenderBuffer:(GLuint)glDepthRenderBuffer
+                        glFrameBuffer:(GLuint)glFrameBuffer
+            glSampleColorRenderBuffer:(GLuint)glSampleColorRenderBuffer
+            glSampleDepthRenderBuffer:(GLuint)glSampleDepthRenderBuffer
+                  glSampleFrameBuffer:(GLuint)glSampleFrameBuffer
+                    metalColorTexture:(id<MTLTexture>)metalColorTexture
+                    metalDepthTexture:(id<MTLTexture>)metalDepthTexture
+                                width:(NSUInteger)width
+                               height:(NSUInteger)height
+                     metalSharedEvent:(id<MTLEvent>)metalSharedEvent
+                          signalValue:(uint64_t)signalValue {
+    self = [super init];
+    if (self) {
+        _eglColorImage = eglColorImage;
+        _eglDepthImage = eglDepthImage;
+        _glColorRenderBuffer = glColorRenderBuffer;
+        _glDepthRenderBuffer = glDepthRenderBuffer;
+        _glSampleColorRenderBuffer = glSampleColorRenderBuffer;
+        _glSampleDepthRenderBuffer = glSampleDepthRenderBuffer;
+        _glSampleFrameBuffer = glSampleFrameBuffer;
+        _metalColorTexture = metalColorTexture;
+        _metalDepthTexture = metalDepthTexture;
+        _glFrameBuffer = glFrameBuffer;
+        _width = width;
+        _height = height;
+        _metalSharedEvent = metalSharedEvent;
+        _signalValue = signalValue;
+    }
+    return self;
+}
+@end
+#else
 #if TARGET_OSX_OR_CATALYST
 @interface PassthroughGLLayer : CAOpenGLLayer
 @property (nonatomic) CGLContextObj renderContext;
@@ -107,11 +180,14 @@ typedef enum EGLRenderingAPI : int
 @property (nonatomic) GLsizei sampleCount;
 #ifdef USE_EGL
 @property (nonatomic) CAMetalLayer *metalLayer;
+@property (nonatomic) id<MTLDevice> metalDevice;
+@property (nonatomic) id<MTLCommandQueue> metalCommandQueue;
 @property (nonatomic) EGLRenderingAPI internalAPI;
 @property (nonatomic) EGLDisplay display;
 @property (nonatomic) EGLSurface renderSurface;
 @property (nonatomic) EGLConfig renderConfig;
 @property (nonatomic) EGLContext renderContext;
+@property (nonatomic) AsyncGLRendererResources *renderResources;
 #else
 @property (nonatomic) GLuint framebuffer;
 @property (nonatomic) GLuint depthBuffer;
@@ -276,7 +352,8 @@ typedef enum EGLRenderingAPI : int
         [self makeRenderContextCurrent];
         [self _drawGL:size];
     #ifdef USE_EGL
-        eglSwapBuffers(_display, _renderSurface);
+        if (!_renderToMetalTexture)
+            eglSwapBuffers(_display, _renderSurface);
     #else
         glFlush();
     #if !TARGET_OSX_OR_CATALYST
@@ -305,6 +382,9 @@ typedef enum EGLRenderingAPI : int
     _display = EGL_NO_DISPLAY;
     _renderSurface = EGL_NO_SURFACE;
     _renderContext = EGL_NO_CONTEXT;
+    _metalDevice = nil;
+    _metalCommandQueue = nil;
+    _renderResources = nil;
 #else
 #if !TARGET_OSX_OR_CATALYST
     _internalAPI = _api == AsyncGLAPIOpenGLES3 ? kEAGLRenderingAPIOpenGLES3 : kEAGLRenderingAPIOpenGLES2;
@@ -349,6 +429,7 @@ typedef enum EGLRenderingAPI : int
 
 #ifdef USE_EGL
     _metalLayer = (CAMetalLayer *)self.layer;
+    _renderToMetalTexture = YES;
 #elif TARGET_OSX_OR_CATALYST
     _glLayer = (PassthroughGLLayer *)self.layer;
     _glLayer.asynchronous = YES;
@@ -579,22 +660,53 @@ typedef enum EGLRenderingAPI : int
         return NO;
     }
 
-    _renderContext = [self createEGLContextWithDisplay:_display api:_internalAPI sharedContext:EGL_NO_CONTEXT config:&_renderConfig depthSize:24 msaa:&_msaaEnabled];
+    if (_renderToMetalTexture) {
+        BOOL msaaEnabled = NO;
+        _renderContext = [self createEGLContextWithDisplay:_display api:_internalAPI sharedContext:EGL_NO_CONTEXT config:&_renderConfig depthSize:24 msaa:&msaaEnabled];
+    } else {
+        _renderContext = [self createEGLContextWithDisplay:_display api:_internalAPI sharedContext:EGL_NO_CONTEXT config:&_renderConfig depthSize:24 msaa:&_msaaEnabled];
 
-    if (_msaaEnabled) {
-        EGLint numSamples;
-        if (eglGetConfigAttrib(_display, _renderConfig, EGL_SAMPLES, &numSamples) && numSamples > 1)
-            _sampleCount = (GLsizei)numSamples;
+        if (_msaaEnabled) {
+            EGLint numSamples;
+            if (eglGetConfigAttrib(_display, _renderConfig, EGL_SAMPLES, &numSamples) && numSamples > 1)
+                _sampleCount = (GLsizei)numSamples;
+        }
     }
 
     if (_renderContext == EGL_NO_CONTEXT)
         return NO;
 
-    _renderSurface = eglCreateWindowSurface(_display, _renderConfig, (__bridge EGLNativeWindowType)(_metalLayer), NULL);
+    if (_renderToMetalTexture) {
+        EGLAttrib angleDevice = 0;
+       if (eglQueryDisplayAttribEXT(_display, EGL_DEVICE_EXT, &angleDevice) != EGL_TRUE)
+           return NO;
 
-    if (_renderSurface == EGL_NO_SURFACE) {
-        NSLog(@"eglCreateWindowSurface() returned error %d", eglGetError());
-        return NO;
+       EGLAttrib device = 0;
+       if (eglQueryDeviceAttribEXT((EGLDeviceEXT)angleDevice, EGL_METAL_DEVICE_ANGLE, &device) != EGL_TRUE)
+           return NO;
+
+       _metalDevice = (__bridge id<MTLDevice>)(void *)device;
+
+        if (_metalDevice == nil) {
+            NSLog(@"Unable to get device from ANGLE");
+            return NO;
+        }
+
+        _metalCommandQueue = [_metalDevice newCommandQueue];
+
+        if (_metalCommandQueue == nil) {
+            NSLog(@"[MTLDevice newCommandQueue] returned nil");
+            return NO;
+        }
+
+        _metalLayer.device = _metalDevice;
+    } else {
+        _renderSurface = eglCreateWindowSurface(_display, _renderConfig, (__bridge EGLNativeWindowType)(_metalLayer), NULL);
+
+        if (_renderSurface == EGL_NO_SURFACE) {
+            NSLog(@"eglCreateWindowSurface() returned error %d", eglGetError());
+            return NO;
+        }
     }
 
     __block CGSize size;
@@ -603,6 +715,16 @@ typedef enum EGLRenderingAPI : int
     });
 
     [self makeRenderContextCurrent];
+
+    if (_msaaEnabled && _renderToMetalTexture) {
+        GLint numSamples;
+        glGetIntegerv(GL_MAX_SAMPLES, &numSamples);
+        if (numSamples > 1)
+            _sampleCount = MIN(numSamples, 4);
+        else
+            _msaaEnabled = NO;
+    }
+
     eglSwapInterval(_display, 0);
 
     return [self setupGL:size];
@@ -784,6 +906,136 @@ typedef enum EGLRenderingAPI : int
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
     }
 #endif
+#else
+    if (!_renderToMetalTexture)
+        return;
+
+    const EGLint emptyAttributes[] = { EGL_NONE };
+
+    GLuint glFrameBuffer;
+    id<MTLTexture> metalColorTexture;
+    id<MTLTexture> metalDepthTexture;
+    EGLImageKHR eglColorImage;
+    EGLImageKHR eglDepthImage;
+    GLuint glColorRenderBuffer;
+    GLuint glDepthRenderBuffer;
+    uint64_t signalValue;
+    id<MTLEvent> sharedEvent;
+    GLuint glSampleColorRenderBuffer;
+    GLuint glSampleDepthRenderBuffer;
+    GLuint glSampleFrameBuffer;
+
+    if (_renderResources == nil) {
+        glGenFramebuffers(1, &glFrameBuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, glFrameBuffer);
+        glFramebufferParameteriMESA(GL_FRAMEBUFFER, GL_FRAMEBUFFER_FLIP_Y_MESA, 1);
+
+        if (_msaaEnabled) {
+            glGenFramebuffers(1, &glSampleFrameBuffer);
+            glBindFramebuffer(GL_FRAMEBUFFER, glSampleFrameBuffer);
+            glFramebufferParameteriMESA(GL_FRAMEBUFFER, GL_FRAMEBUFFER_FLIP_Y_MESA, 1);
+        } else {
+            glSampleFrameBuffer = 0;
+        }
+
+        sharedEvent = [_metalDevice newEvent];
+        signalValue = 1;
+    } else {
+        sharedEvent = _renderResources.metalSharedEvent;
+        uint64_t currentSignalValue = _renderResources.signalValue;
+        EGLAttrib syncAttribs[] = {
+            EGL_SYNC_METAL_SHARED_EVENT_OBJECT_ANGLE,
+            (EGLAttrib)sharedEvent,
+            EGL_SYNC_METAL_SHARED_EVENT_SIGNAL_VALUE_HI_ANGLE,
+            (EGLAttrib)(currentSignalValue >> 32),
+            EGL_SYNC_METAL_SHARED_EVENT_SIGNAL_VALUE_LO_ANGLE,
+            (EGLAttrib)(currentSignalValue & 0xFFFFFFFF),
+            EGL_SYNC_CONDITION,
+            EGL_SYNC_METAL_SHARED_EVENT_SIGNALED_ANGLE,
+            EGL_NONE
+        };
+
+        EGLSync sync = eglCreateSync(_display, EGL_SYNC_METAL_SHARED_EVENT_ANGLE, syncAttribs);
+        eglWaitSync(_display, sync, 0);
+        eglDestroySync(_display, sync);
+
+        glFrameBuffer = _renderResources.glFrameBuffer;
+        glSampleFrameBuffer = _renderResources.glSampleFrameBuffer;
+
+        signalValue = currentSignalValue + 1;
+    }
+
+    NSUInteger width = (NSUInteger)size.width;
+    NSUInteger height = (NSUInteger)size.height;
+
+    if (_renderResources == nil || _renderResources.width != width || _renderResources.height != height) {
+        _metalLayer.drawableSize = CGSizeMake(width, height);
+
+        // Regenerate textures for offscreen rendering
+        if (_renderResources != nil) {
+            GLuint renderBuffers[] = { _renderResources.glColorRenderBuffer, _renderResources.glDepthRenderBuffer };
+            glDeleteRenderbuffers(2, renderBuffers);
+            eglDestroyImageKHR(_display, _renderResources.eglColorImage);
+            eglDestroyImageKHR(_display, _renderResources.eglDepthImage);
+        }
+
+        MTLTextureDescriptor *texDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
+        texDescriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        texDescriptor.storageMode = MTLStorageModePrivate;
+        metalColorTexture = [_metalDevice newTextureWithDescriptor:texDescriptor];
+        texDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:width height:height mipmapped:NO];
+        texDescriptor.usage = MTLTextureUsageRenderTarget;
+        texDescriptor.storageMode = MTLStorageModePrivate;
+        metalDepthTexture = [_metalDevice newTextureWithDescriptor:texDescriptor];
+
+        eglColorImage = eglCreateImageKHR(_display, EGL_NO_CONTEXT, EGL_METAL_TEXTURE_ANGLE, (__bridge EGLClientBuffer)metalColorTexture, emptyAttributes);
+        eglDepthImage = eglCreateImageKHR(_display, EGL_NO_CONTEXT, EGL_METAL_TEXTURE_ANGLE, (__bridge EGLClientBuffer)metalDepthTexture, emptyAttributes);
+
+        glGenRenderbuffers(1, &glColorRenderBuffer);
+        glBindRenderbuffer(GL_RENDERBUFFER, glColorRenderBuffer);
+        glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, eglColorImage);
+
+        glGenRenderbuffers(1, &glDepthRenderBuffer);
+        glBindRenderbuffer(GL_RENDERBUFFER, glDepthRenderBuffer);
+        glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, eglDepthImage);
+
+        if (_msaaEnabled) {
+            glSampleColorRenderBuffer = _renderResources.glSampleColorRenderBuffer;
+            if (glSampleColorRenderBuffer == 0)
+                glGenRenderbuffers(1, &glSampleColorRenderBuffer);
+            glBindRenderbuffer(GL_RENDERBUFFER, glSampleColorRenderBuffer);
+            glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, (GLsizei)width, (GLsizei)height);
+
+            glSampleDepthRenderBuffer = _renderResources.glSampleDepthRenderBuffer;
+            if (glSampleDepthRenderBuffer == 0)
+                glGenRenderbuffers(1, &glSampleDepthRenderBuffer);
+            glBindRenderbuffer(GL_RENDERBUFFER, glSampleDepthRenderBuffer);
+            glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH_COMPONENT24, (GLsizei)width, (GLsizei)height);
+
+            glBindFramebuffer(GL_FRAMEBUFFER, glSampleFrameBuffer);
+
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, glSampleColorRenderBuffer);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, glSampleDepthRenderBuffer);
+        } else {
+            glSampleColorRenderBuffer = 0;
+            glSampleDepthRenderBuffer = 0;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, glFrameBuffer);
+
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, glColorRenderBuffer);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, glDepthRenderBuffer);
+    } else {
+        eglColorImage = _renderResources.eglColorImage;
+        eglDepthImage = _renderResources.eglDepthImage;
+        glColorRenderBuffer = _renderResources.glColorRenderBuffer;
+        glDepthRenderBuffer = _renderResources.glDepthRenderBuffer;
+        glSampleColorRenderBuffer = _renderResources.glSampleColorRenderBuffer;
+        glSampleDepthRenderBuffer = _renderResources.glSampleDepthRenderBuffer;
+        metalColorTexture = _renderResources.metalColorTexture;
+        metalDepthTexture = _renderResources.metalDepthTexture;
+    }
+
+    _renderResources = [[AsyncGLRendererResources alloc] initWithEGLColorImage:eglColorImage eglDepthImage:eglDepthImage glColorRenderBuffer:glColorRenderBuffer glDepthRenderBuffer:glDepthRenderBuffer glFrameBuffer:glFrameBuffer glSampleColorRenderBuffer:glSampleColorRenderBuffer glSampleDepthRenderBuffer:glSampleDepthRenderBuffer glSampleFrameBuffer:glSampleFrameBuffer metalColorTexture:metalColorTexture metalDepthTexture:metalDepthTexture width:width height:height metalSharedEvent:sharedEvent signalValue:signalValue];
 #endif
 }
 
@@ -796,7 +1048,29 @@ typedef enum EGLRenderingAPI : int
 {
     [self updateBuffersSize:size];
 
-#if TARGET_OSX_OR_CATALYST || defined(USE_EGL)
+#ifdef USE_EGL
+    if (_renderToMetalTexture) {
+        if (_msaaEnabled) {
+            GLsizei width = (GLsizei)size.width;
+            GLsizei height = (GLsizei)size.height;
+            glBindFramebuffer(GL_FRAMEBUFFER, [_renderResources glSampleFrameBuffer]);
+
+            [_delegate _drawGL:size];
+
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, [_renderResources glSampleFrameBuffer]);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, [_renderResources glFrameBuffer]);
+
+            GLenum attachments[] = { GL_COLOR_ATTACHMENT0, GL_DEPTH_COMPONENT };
+            glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            glInvalidateFramebuffer(GL_READ_FRAMEBUFFER, 2, attachments);
+        } else {
+            glBindFramebuffer(GL_FRAMEBUFFER, [_renderResources glFrameBuffer]);
+            [_delegate _drawGL:size];
+        }
+    } else {
+        [_delegate _drawGL:size];
+    }
+#elif TARGET_OSX_OR_CATALYST
     [_delegate _drawGL:size];
 #else
     if (_msaaEnabled) {
@@ -819,6 +1093,44 @@ typedef enum EGLRenderingAPI : int
         }
     } else {
         [_delegate _drawGL:size];
+    }
+#endif
+#ifdef USE_EGL
+    if (_renderToMetalTexture) {
+        glFlush();
+
+        id<CAMetalDrawable> drawable = [_metalLayer nextDrawable];
+        id<MTLCommandBuffer> commandBuffer = [_metalCommandQueue commandBuffer];
+
+        id<MTLEvent> sharedEvent = [_renderResources metalSharedEvent];
+        uint64_t signalValue = [_renderResources signalValue];
+        EGLAttrib syncAttribs[] = {
+            EGL_SYNC_METAL_SHARED_EVENT_OBJECT_ANGLE,
+            (EGLAttrib)sharedEvent,
+            EGL_SYNC_METAL_SHARED_EVENT_SIGNAL_VALUE_HI_ANGLE,
+            (EGLAttrib)(signalValue >> 32),
+            EGL_SYNC_METAL_SHARED_EVENT_SIGNAL_VALUE_LO_ANGLE,
+            (EGLAttrib)(signalValue & 0xFFFFFFFF),
+            EGL_NONE
+        };
+
+        EGLSync sync = eglCreateSync(_display, EGL_SYNC_METAL_SHARED_EVENT_ANGLE, syncAttribs);
+
+        [commandBuffer encodeWaitForEvent:sharedEvent value:signalValue];
+
+        id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
+        [blitEncoder copyFromTexture:[_renderResources metalColorTexture] toTexture:drawable.texture];
+        [blitEncoder endEncoding];
+
+        signalValue += 1;
+
+        [commandBuffer encodeSignalEvent:sharedEvent value:signalValue];
+        _renderResources.signalValue = signalValue;
+
+        eglDestroySync(_display, sync);
+
+        [commandBuffer presentDrawable:drawable];
+        [commandBuffer commit];
     }
 #endif
 }

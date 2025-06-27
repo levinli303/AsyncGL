@@ -25,6 +25,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic) BOOL msaaEnabled;
 @property (nonatomic) AsyncGLAPI api;
+@property (nonatomic) BOOL renderToMetalTexture;
 @property (nonatomic, weak) id<AsyncGLViewDelegate> delegate;
 
 @property (nonatomic, readonly) NSThread *renderThread;
