@@ -29,7 +29,7 @@ let package = Package(
         .binaryTarget(
             name: "libGLESv2",
             url: "https://github.com/celestiamobile/angle-apple/releases/download/1.1.9/libGLESv2.xcframework.zip",
-            checksum: "2d9bd5f2000ac4f4c413940f1962325d0eb33d2c14aca5fc8910f1ea30efa959"
+            checksum: "d9401bff4909004d04adbe418a63d460a29c08209d58834c685aa1d430d05500"
         ),
         .binaryTarget(
             name: "libEGL",
