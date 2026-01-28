@@ -16,7 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)runTaskAsynchronously:(void(NS_SWIFT_SENDABLE ^)(void))task;
 - (void)runTaskSynchronously:(void(NS_SWIFT_SENDABLE ^)(void))task;
 - (void)makeRenderContextCurrent;
-- (void)prepareForDrawing:(void (NS_NOESCAPE ^ _Nullable)(void))draw resolve:(void (NS_NOESCAPE ^ _Nullable)(void))resolve;
+- (void)prepareForDrawing:(void (NS_NOESCAPE ^ _Nullable)(void))draw resolve:(void (NS_NOESCAPE ^ _Nullable)(void))resolve NS_SWIFT_NONISOLATED;
 
 @end
 
