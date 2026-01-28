@@ -37,4 +37,9 @@
     [_view makeRenderContextCurrent];
 }
 
+- (void)prepareForDrawing:(void (NS_NOESCAPE ^)(void))draw resolve:(void (NS_NOESCAPE ^)(void))resolve {
+    assert(_view != nil);
+    [_view prepareForDrawing:draw resolve:resolve];
+}
+
 @end

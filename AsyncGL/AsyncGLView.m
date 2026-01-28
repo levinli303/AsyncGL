@@ -223,11 +223,75 @@ typedef enum EGLRenderingAPI : int
 #else
 #if !TARGET_OSX_OR_CATALYST
     [EAGLContext setCurrentContext:_renderContext];
-    glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, _msaaEnabled ? _sampleFramebuffer : _framebuffer);
 #else
     CGLSetCurrentContext(_renderContext);
     glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
 #endif
+#endif
+}
+
+- (void)prepareForDrawing:(void (NS_NOESCAPE ^)(void))draw resolve:(void (NS_NOESCAPE ^)(void))resolve {
+    [self makeRenderContextCurrent];
+    if (draw != nil)
+        draw();
+#ifdef USE_EGL
+    if (resolve != nil)
+        resolve();
+#else
+    if (_msaaEnabled) {
+        // Save current framebuffer binding
+        GLint previousFramebuffer = 0;
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
+
+        GLsizei width = (GLsizei)_savedBufferSize.width;
+        GLsizei height = (GLsizei)_savedBufferSize.height;
+#if TARGET_OSX_OR_CATALYST
+        // CAOpenGLLayer manages its own framebuffer, so here we need to create a framebuffer on our own
+        GLuint tempFramebuffer;
+        GLuint tempRenderbuffer;
+        glGenFramebuffers(1, &tempFramebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, tempFramebuffer);
+        glGenRenderbuffers(1, &tempRenderbuffer);
+        glBindRenderbuffer(GL_RENDERBUFFER, tempRenderbuffer);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, width, height);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, tempRenderbuffer);
+
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            NSLog(@"framebuffer not complete %d", status);
+        } else {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, _framebuffer);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, tempFramebuffer);
+            glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            glBindFramebuffer(GL_FRAMEBUFFER, tempFramebuffer);
+            if (resolve != nil)
+                resolve();
+        }
+        glDeleteFramebuffers(1, &tempFramebuffer);
+        glDeleteRenderbuffers(1, &tempRenderbuffer);
+#else
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, _sampleFramebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, _framebuffer);
+        GLenum attachments[] = { GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT };
+        if (_internalAPI == kEAGLRenderingAPIOpenGLES2) {
+            glResolveMultisampleFramebufferAPPLE();
+            glDiscardFramebufferEXT(GL_READ_FRAMEBUFFER, 2, attachments);
+        } else {
+            glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            glInvalidateFramebuffer(GL_READ_FRAMEBUFFER, 2, attachments);
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
+        if (resolve != nil)
+            resolve();
+#endif
+
+        // Restore previous framebuffer binding
+        glBindFramebuffer(GL_FRAMEBUFFER, previousFramebuffer);
+    } else {
+        if (resolve != nil)
+            resolve();
+    }
 #endif
 }
 

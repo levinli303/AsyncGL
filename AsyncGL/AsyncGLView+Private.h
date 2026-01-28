@@ -37,6 +37,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)pause;
 - (void)resume;
 - (void)makeRenderContextCurrent;
+- (void)prepareForDrawing:(void(NS_SWIFT_SENDABLE ^ _Nullable)(void))draw resolve:(void(NS_SWIFT_SENDABLE ^ _Nullable)(void))resolve;
 
 @end
 
