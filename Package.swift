@@ -1,4 +1,4 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.1
 
 import PackageDescription
 
@@ -16,14 +16,15 @@ let package = Package(
             name: "AsyncGL",
             targets: ["AsyncGL"]
         ),
-        .library(
-            name: "AsyncGLANGLE",
-            targets: ["AsyncGLANGLE"]
-        ),
         .library(name: "ANGLE", targets: [
             "libGLESv2",
             "libEGL",
         ]),
+    ],
+    traits: [
+        .trait(name: "OpenGL", description: "Use native OpenGL (default)"),
+        .trait(name: "ANGLE", description: "Use ANGLE for OpenGL ES via EGL"),
+        .default(enabledTraits: ["OpenGL"]),
     ],
     targets: [
         .binaryTarget(
@@ -38,25 +39,17 @@ let package = Package(
         ),
         .target(
             name: "AsyncGL",
+            dependencies: [
+                .target(name: "libGLESv2", condition: .when(traits: ["ANGLE"])),
+                .target(name: "libEGL", condition: .when(traits: ["ANGLE"])),
+            ],
             path: "AsyncGL",
             publicHeadersPath: "include",
             cSettings: [
                 .define("GL_SILENCE_DEPRECATION"),
+                .define("GL_GLEXT_PROTOTYPES", .when(traits: ["ANGLE"])),
+                .define("EGL_EGLEXT_PROTOTYPES", .when(traits: ["ANGLE"])),
             ]
         ),
-        .target(
-            name: "AsyncGLANGLE",
-            dependencies: [
-                .target(name: "libGLESv2"),
-                .target(name: "libEGL"),
-            ],
-            path: "AsyncGLANGLE",
-            publicHeadersPath: "include",
-            cSettings: [
-                .define("GL_SILENCE_DEPRECATION"),
-                .define("GL_GLEXT_PROTOTYPES"),
-                .define("EGL_EGLEXT_PROTOTYPES"),
-            ]
-        )
     ]
 )
