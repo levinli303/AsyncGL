@@ -509,6 +509,7 @@ typedef enum EGLRenderingAPI : int
 #ifdef USE_EGL
 - (EGLContext)createEGLContextWithDisplay:(EGLDisplay)display api:(EGLRenderingAPI)api sharedContext:(EGLContext)sharedContext config:(EGLConfig*)config depthSize:(EGLint)depthSize msaa:(BOOL*)msaa {
     EGLint multisampleAttribs[] = {
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
         EGL_BLUE_SIZE, 8,
         EGL_GREEN_SIZE, 8,
         EGL_RED_SIZE, 8,
@@ -518,6 +519,7 @@ typedef enum EGLRenderingAPI : int
         EGL_NONE
     };
     EGLint attribs[] = {
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
         EGL_BLUE_SIZE, 8,
         EGL_GREEN_SIZE, 8,
         EGL_RED_SIZE, 8,
@@ -525,22 +527,45 @@ typedef enum EGLRenderingAPI : int
         EGL_NONE
     };
 
+    EGLConfig configs[64];
     EGLint numConfigs;
+    EGLint format;
     if (*msaa) {
-        // Try to enable multisample but fallback if not available
-        if (!eglChooseConfig(display, multisampleAttribs, config, 1, &numConfigs)) {
-            *msaa = NO;
-            NSLog(@"eglChooseConfig() returned error %d", eglGetError());
-            if (!eglChooseConfig(display, attribs, config, 1, &numConfigs)) {
-                NSLog(@"eglChooseConfig() returned error %d", eglGetError());
-                return EGL_NO_CONTEXT;
+        // Try MSAA config first
+        if (eglChooseConfig(display, multisampleAttribs, configs, sizeof(configs) / sizeof(EGLConfig), &numConfigs)) {
+            for (EGLint i = 0; i < numConfigs; ++i) {
+                if (eglGetConfigAttrib(display, configs[i], EGL_NATIVE_VISUAL_ID, &format)) {
+                    *config = configs[i];
+                    break;
+                } else {
+                    NSLog(@"eglGetConfigAttrib() returned error %d", eglGetError());
+                }
             }
+        } else {
+            NSLog(@"eglChooseConfig() returned error %d", eglGetError());
         }
-    } else {
-        if (!eglChooseConfig(display, attribs, config, 1, &numConfigs)) {
+    }
+
+    // Fallback to non-MSAA config if MSAA not requested or unavailable
+    if (*config == EGL_NO_CONTEXT) {
+        if (!eglChooseConfig(display, attribs, configs, sizeof(configs) / sizeof(EGLConfig), &numConfigs)) {
             NSLog(@"eglChooseConfig() returned error %d", eglGetError());
             return EGL_NO_CONTEXT;
         }
+
+        for (EGLint i = 0; i < numConfigs; ++i) {
+            if (eglGetConfigAttrib(display, configs[i], EGL_NATIVE_VISUAL_ID, &format)) {
+                *config = configs[i];
+                break;
+            } else {
+                NSLog(@"eglGetConfigAttrib() returned error %d", eglGetError());
+            }
+        }
+    }
+
+    if (*config == EGL_NO_CONTEXT) {
+        NSLog(@"No suitable EGLConfig found");
+        return EGL_NO_CONTEXT;
     }
 
     // Init context
@@ -745,7 +770,7 @@ typedef enum EGLRenderingAPI : int
 - (void)createMainBuffers {
     glGenRenderbuffers(1, &_mainColorbuffer);
     glBindRenderbuffer(GL_RENDERBUFFER, _mainColorbuffer);
-    [_mainContext renderbufferStorage:GL_RENDERBUFFER fromDrawable:(CAEAGLLayer *)self.layer];
+    [_mainContext renderbufferStorage:GL_RENDERBUFFER fromDrawable:_eaglLayer];
 }
 #endif
 
