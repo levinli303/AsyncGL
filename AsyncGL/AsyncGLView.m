@@ -43,7 +43,6 @@ typedef NS_ENUM(NSUInteger, AsyncGLViewContextState) {
 /* EGL rendering API */
 typedef enum EGLRenderingAPI : int
 {
-    kEGLRenderingAPIOpenGLES1 = 1,
     kEGLRenderingAPIOpenGLES2 = 2,
     kEGLRenderingAPIOpenGLES3 = 3,
 } EGLRenderingAPI;
@@ -509,7 +508,7 @@ typedef enum EGLRenderingAPI : int
 #ifdef USE_EGL
 - (EGLContext)createEGLContextWithDisplay:(EGLDisplay)display api:(EGLRenderingAPI)api sharedContext:(EGLContext)sharedContext config:(EGLConfig*)config depthSize:(EGLint)depthSize msaa:(BOOL*)msaa {
     EGLint multisampleAttribs[] = {
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_RENDERABLE_TYPE, api == kEGLRenderingAPIOpenGLES3 ? EGL_OPENGL_ES3_BIT : EGL_OPENGL_ES2_BIT,
         EGL_BLUE_SIZE, 8,
         EGL_GREEN_SIZE, 8,
         EGL_RED_SIZE, 8,
@@ -519,7 +518,7 @@ typedef enum EGLRenderingAPI : int
         EGL_NONE
     };
     EGLint attribs[] = {
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_RENDERABLE_TYPE, api == kEGLRenderingAPIOpenGLES3 ? EGL_OPENGL_ES3_BIT : EGL_OPENGL_ES2_BIT,
         EGL_BLUE_SIZE, 8,
         EGL_GREEN_SIZE, 8,
         EGL_RED_SIZE, 8,
@@ -573,10 +572,6 @@ typedef enum EGLRenderingAPI : int
     int ctxMinorVersion = 0;
     switch (api)
     {
-        case kEGLRenderingAPIOpenGLES1:
-            ctxMajorVersion = 1;
-            ctxMinorVersion = 0;
-            break;
         case kEGLRenderingAPIOpenGLES2:
             ctxMajorVersion = 2;
             ctxMinorVersion = 0;
