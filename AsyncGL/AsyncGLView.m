@@ -674,17 +674,18 @@ typedef enum EGLRenderingAPI : int
     if (_renderContext == EGL_NO_CONTEXT)
         return NO;
 
-    _renderSurface = eglCreateWindowSurface(_display, _renderConfig, (__bridge EGLNativeWindowType)(_metalLayer), NULL);
+    __block CGSize size;
+    __block EGLSurface renderSurface = EGL_NO_SURFACE;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        renderSurface = eglCreateWindowSurface(_display, _renderConfig, (__bridge EGLNativeWindowType)(_metalLayer), NULL);
+        size = self.frame.size;
+    });
+    _renderSurface = renderSurface;
 
     if (_renderSurface == EGL_NO_SURFACE) {
         NSLog(@"eglCreateWindowSurface() returned error %d", eglGetError());
         return NO;
     }
-
-    __block CGSize size;
-    dispatch_sync(dispatch_get_main_queue(), ^{
-        size = self.frame.size;
-    });
 
     [self makeRenderContextCurrent];
     eglSwapInterval(_display, 0);
