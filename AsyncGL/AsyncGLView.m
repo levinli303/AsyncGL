@@ -47,6 +47,50 @@ typedef enum EGLRenderingAPI : int
     kEGLRenderingAPIOpenGLES3 = 3,
 } EGLRenderingAPI;
 
+#if DEBUG
+static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
+                                                GLenum type,
+                                                GLuint id,
+                                                GLenum severity,
+                                                GLsizei length,
+                                                const GLchar *message,
+                                                const void *userParam) {
+    const char *sourceStr;
+    switch (source) {
+        case GL_DEBUG_SOURCE_API_KHR:             sourceStr = "API"; break;
+        case GL_DEBUG_SOURCE_WINDOW_SYSTEM_KHR:   sourceStr = "WINDOW_SYSTEM"; break;
+        case GL_DEBUG_SOURCE_SHADER_COMPILER_KHR: sourceStr = "SHADER_COMPILER"; break;
+        case GL_DEBUG_SOURCE_THIRD_PARTY_KHR:     sourceStr = "THIRD_PARTY"; break;
+        case GL_DEBUG_SOURCE_APPLICATION_KHR:     sourceStr = "APPLICATION"; break;
+        case GL_DEBUG_SOURCE_OTHER_KHR:           sourceStr = "OTHER"; break;
+        default:                                  sourceStr = "UNKNOWN"; break;
+    }
+    const char *typeStr;
+    switch (type) {
+        case GL_DEBUG_TYPE_ERROR_KHR:               typeStr = "ERROR"; break;
+        case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR_KHR: typeStr = "DEPRECATED"; break;
+        case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR_KHR:  typeStr = "UNDEFINED"; break;
+        case GL_DEBUG_TYPE_PORTABILITY_KHR:         typeStr = "PORTABILITY"; break;
+        case GL_DEBUG_TYPE_PERFORMANCE_KHR:         typeStr = "PERFORMANCE"; break;
+        case GL_DEBUG_TYPE_MARKER_KHR:              typeStr = "MARKER"; break;
+        case GL_DEBUG_TYPE_PUSH_GROUP_KHR:          typeStr = "PUSH_GROUP"; break;
+        case GL_DEBUG_TYPE_POP_GROUP_KHR:           typeStr = "POP_GROUP"; break;
+        case GL_DEBUG_TYPE_OTHER_KHR:               typeStr = "OTHER"; break;
+        default:                                    typeStr = "UNKNOWN"; break;
+    }
+    const char *severityStr;
+    switch (severity) {
+        case GL_DEBUG_SEVERITY_HIGH_KHR:         severityStr = "HIGH"; break;
+        case GL_DEBUG_SEVERITY_MEDIUM_KHR:       severityStr = "MEDIUM"; break;
+        case GL_DEBUG_SEVERITY_LOW_KHR:          severityStr = "LOW"; break;
+        case GL_DEBUG_SEVERITY_NOTIFICATION_KHR: severityStr = "NOTIFICATION"; break;
+        default:                                 severityStr = "UNKNOWN"; break;
+    }
+    NSLog(@"[GL_KHR_debug] source=%s type=%s id=%u severity=%s: %.*s",
+          sourceStr, typeStr, id, severityStr, (int)length, message);
+}
+#endif
+
 #else
 #if TARGET_OSX_OR_CATALYST
 @import OpenGL.GL;
@@ -584,7 +628,14 @@ typedef enum EGLRenderingAPI : int
             NSLog(@"Unknown GL ES API %d", api);
             return EGL_NO_CONTEXT;
     }
-    EGLint ctxAttribs[] = { EGL_CONTEXT_MAJOR_VERSION, ctxMajorVersion, EGL_CONTEXT_MINOR_VERSION, ctxMinorVersion, EGL_NONE };
+    EGLint ctxAttribs[] = {
+        EGL_CONTEXT_MAJOR_VERSION, ctxMajorVersion,
+        EGL_CONTEXT_MINOR_VERSION, ctxMinorVersion,
+#if DEBUG
+        EGL_CONTEXT_FLAGS_KHR, EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR,
+#endif
+        EGL_NONE,
+    };
 
     EGLContext eglContext = eglCreateContext(display, *config, sharedContext, ctxAttribs);
     if (eglContext == EGL_NO_CONTEXT) {
@@ -689,6 +740,16 @@ typedef enum EGLRenderingAPI : int
 
     [self makeRenderContextCurrent];
     eglSwapInterval(_display, 0);
+
+#if DEBUG
+    const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
+    if (extensions != NULL && strstr(extensions, "GL_KHR_debug") != NULL) {
+        glEnable(GL_DEBUG_OUTPUT_KHR);
+        glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS_KHR);
+        glDebugMessageCallbackKHR(AsyncGLKHRDebugCallback, NULL);
+        glDebugMessageControlKHR(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, GL_TRUE);
+    }
+#endif
 
     return [self setupGL:size];
 #else
