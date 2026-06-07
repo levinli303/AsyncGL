@@ -40,6 +40,11 @@ typedef NS_ENUM(NSUInteger, AsyncGLViewContextState) {
 @import libGLESv2;
 @import libEGL;
 
+#if DEBUG
+typedef void (GL_APIENTRY *AsyncGLDebugMessageCallbackKHRProc)(GLDEBUGPROCKHR callback, const void *userParam);
+typedef void (GL_APIENTRY *AsyncGLDebugMessageControlKHRProc)(GLenum source, GLenum type, GLenum severity, GLsizei count, const GLuint *ids, GLboolean enabled);
+#endif
+
 /* EGL rendering API */
 typedef enum EGLRenderingAPI : int
 {
@@ -744,10 +749,15 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 #if DEBUG
     const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
     if (extensions != NULL && strstr(extensions, "GL_KHR_debug") != NULL) {
-        glEnable(GL_DEBUG_OUTPUT_KHR);
-        glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS_KHR);
-        glDebugMessageCallbackKHR(AsyncGLKHRDebugCallback, NULL);
-        glDebugMessageControlKHR(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, GL_TRUE);
+        AsyncGLDebugMessageCallbackKHRProc debugMessageCallback = (AsyncGLDebugMessageCallbackKHRProc)eglGetProcAddress("glDebugMessageCallbackKHR");
+        AsyncGLDebugMessageControlKHRProc debugMessageControl = (AsyncGLDebugMessageControlKHRProc)eglGetProcAddress("glDebugMessageControlKHR");
+        if (debugMessageCallback != NULL) {
+            glEnable(GL_DEBUG_OUTPUT_KHR);
+            glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS_KHR);
+            debugMessageCallback(AsyncGLKHRDebugCallback, NULL);
+            if (debugMessageControl != NULL)
+                debugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, GL_TRUE);
+        }
     }
 #endif
 
