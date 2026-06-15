@@ -11,7 +11,7 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol AsyncGLViewDelegate <NSObject>
 
 - (BOOL)_prepareGL:(CGSize)size samples:(NSInteger)samples;
-- (void)_drawGL:(CGSize)size;
+- (void)_drawGL:(CGSize)size physicalSize:(CGSize)physicalSize;
 - (void)_clearGL;
 #if !TARGET_OS_OSX
 - (void)_viewWillMoveToWindow:(nullable UIWindow *)window;

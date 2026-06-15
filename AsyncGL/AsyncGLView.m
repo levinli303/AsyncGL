@@ -34,11 +34,20 @@ typedef NS_ENUM(NSUInteger, AsyncGLViewContextState) {
 #endif
 
 #ifdef USE_EGL
-#if TARGET_OS_OSX
 @import QuartzCore.CAMetalLayer;
-#endif
 @import libGLESv2;
 @import libEGL;
+@import Metal;
+
+#ifndef EGL_METAL_TEXTURE_ANGLE
+#define EGL_METAL_TEXTURE_ANGLE             0x34A7
+#endif
+
+#ifndef GL_OES_EGL_image
+typedef void *GLeglImageOES;
+#endif
+typedef void (GL_APIENTRY *AsyncGLEGLImageTargetTexture2DOESProc)(GLenum target, GLeglImageOES image);
+typedef void (GL_APIENTRY *AsyncGLBindMetalRasterizationRateMapANGLEProc)(void *rateMap);
 
 #if DEBUG
 typedef void (GL_APIENTRY *AsyncGLDebugMessageCallbackKHRProc)(GLDEBUGPROCKHR callback, const void *userParam);
@@ -155,11 +164,26 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 @property (nonatomic) GLsizei sampleCount;
 #ifdef USE_EGL
 @property (nonatomic) CAMetalLayer *metalLayer;
+@property (nonatomic, strong) id<MTLDevice> metalDevice;
+@property (nonatomic, strong) id<MTLCommandQueue> metalCommandQueue;
 @property (nonatomic) EGLRenderingAPI internalAPI;
 @property (nonatomic) EGLDisplay display;
-@property (nonatomic) EGLSurface renderSurface;
 @property (nonatomic) EGLConfig renderConfig;
 @property (nonatomic) EGLContext renderContext;
+@property (nonatomic, strong) id<MTLTexture> colorMTLTexture;
+@property (nonatomic, strong) id<MTLRenderPipelineState> presentPipeline;
+@property (nonatomic, strong) id<MTLRasterizationRateMap> rasterizationRateMap;
+@property (nonatomic, strong) id<MTLBuffer> rasterizationRateMapParams;
+@property (nonatomic) MTLSize rasterizationRatePhysicalSize;
+@property (nonatomic) MTLSize rasterizationRateScreenSize;
+@property (nonatomic) EGLImageKHR colorEGLImage;
+@property (nonatomic) GLuint colorTexture;
+@property (nonatomic) GLuint framebuffer;
+@property (nonatomic) GLuint depthBuffer;
+@property (nonatomic) GLuint sampleFramebuffer;
+@property (nonatomic) GLuint sampleColorbuffer;
+@property (nonatomic) GLuint sampleDepthbuffer;
+@property (nonatomic) CGSize savedBufferSize;
 #else
 @property (nonatomic) GLuint framebuffer;
 @property (nonatomic) GLuint depthBuffer;
@@ -267,7 +291,8 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 #pragma mark - interfaces
 - (void)makeRenderContextCurrent {
 #ifdef USE_EGL
-    eglMakeCurrent(_display, _renderSurface, _renderSurface, _renderContext);
+    eglMakeCurrent(_display, EGL_NO_SURFACE, EGL_NO_SURFACE, _renderContext);
+    glBindFramebuffer(GL_FRAMEBUFFER, _msaaEnabled ? _sampleFramebuffer : _framebuffer);
 #else
 #if !TARGET_OSX_OR_CATALYST
     [EAGLContext setCurrentContext:_renderContext];
@@ -284,8 +309,26 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     if (draw != nil)
         draw();
 #ifdef USE_EGL
-    if (resolve != nil)
-        resolve();
+    if (_msaaEnabled) {
+        GLint previousFramebuffer = 0;
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
+
+        GLsizei width = (GLsizei)_savedBufferSize.width;
+        GLsizei height = (GLsizei)_savedBufferSize.height;
+
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, _sampleFramebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, _framebuffer);
+        glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        GLenum attachments[] = { GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT };
+        glInvalidateFramebuffer(GL_READ_FRAMEBUFFER, 2, attachments);
+        glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
+        if (resolve != nil)
+            resolve();
+        glBindFramebuffer(GL_FRAMEBUFFER, previousFramebuffer);
+    } else {
+        if (resolve != nil)
+            resolve();
+    }
 #else
     if (_msaaEnabled) {
         // Save current framebuffer binding
@@ -388,7 +431,7 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
         [self makeRenderContextCurrent];
         [self _drawGL:size];
     #ifdef USE_EGL
-        eglSwapBuffers(_display, _renderSurface);
+        [self _presentToMetalLayer:size];
     #else
         glFlush();
     #if !TARGET_OSX_OR_CATALYST
@@ -415,8 +458,18 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 #ifdef USE_EGL
     _internalAPI = _api == AsyncGLAPIOpenGLES3 ? kEGLRenderingAPIOpenGLES3 : kEGLRenderingAPIOpenGLES2;
     _display = EGL_NO_DISPLAY;
-    _renderSurface = EGL_NO_SURFACE;
     _renderContext = EGL_NO_CONTEXT;
+    _colorMTLTexture = nil;
+    _rasterizationRateMap = nil;
+    _rasterizationRateMapParams = nil;
+    _colorEGLImage = EGL_NO_IMAGE_KHR;
+    _colorTexture = 0;
+    _framebuffer = 0;
+    _depthBuffer = 0;
+    _sampleFramebuffer = 0;
+    _sampleColorbuffer = 0;
+    _sampleDepthbuffer = 0;
+    _savedBufferSize = CGSizeZero;
 #else
 #if !TARGET_OSX_OR_CATALYST
     _internalAPI = _api == AsyncGLAPIOpenGLES3 ? kEAGLRenderingAPIOpenGLES3 : kEAGLRenderingAPIOpenGLES2;
@@ -461,6 +514,11 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
 #ifdef USE_EGL
     _metalLayer = (CAMetalLayer *)self.layer;
+    _metalDevice = MTLCreateSystemDefaultDevice();
+    _metalCommandQueue = [_metalDevice newCommandQueue];
+    _metalLayer.device = _metalDevice;
+    _metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    _metalLayer.framebufferOnly = YES;
 #elif TARGET_OSX_OR_CATALYST
     _glLayer = (PassthroughGLLayer *)self.layer;
     _glLayer.asynchronous = YES;
@@ -556,21 +614,12 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 #pragma mark - context creation
 #ifdef USE_EGL
 - (EGLContext)createEGLContextWithDisplay:(EGLDisplay)display api:(EGLRenderingAPI)api sharedContext:(EGLContext)sharedContext config:(EGLConfig*)config depthSize:(EGLint)depthSize msaa:(BOOL*)msaa {
-    EGLint multisampleAttribs[] = {
-        EGL_RENDERABLE_TYPE, api == kEGLRenderingAPIOpenGLES3 ? EGL_OPENGL_ES3_BIT : EGL_OPENGL_ES2_BIT,
-        EGL_BLUE_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_RED_SIZE, 8,
-        EGL_DEPTH_SIZE, depthSize,
-        EGL_SAMPLES, 4,
-        EGL_SAMPLE_BUFFERS, 1,
-        EGL_NONE
-    };
     EGLint attribs[] = {
         EGL_RENDERABLE_TYPE, api == kEGLRenderingAPIOpenGLES3 ? EGL_OPENGL_ES3_BIT : EGL_OPENGL_ES2_BIT,
         EGL_BLUE_SIZE, 8,
         EGL_GREEN_SIZE, 8,
         EGL_RED_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
         EGL_DEPTH_SIZE, depthSize,
         EGL_NONE
     };
@@ -578,36 +627,18 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     EGLConfig configs[64];
     EGLint numConfigs;
     EGLint format;
-    if (*msaa) {
-        // Try MSAA config first
-        if (eglChooseConfig(display, multisampleAttribs, configs, sizeof(configs) / sizeof(EGLConfig), &numConfigs)) {
-            for (EGLint i = 0; i < numConfigs; ++i) {
-                if (eglGetConfigAttrib(display, configs[i], EGL_NATIVE_VISUAL_ID, &format)) {
-                    *config = configs[i];
-                    break;
-                } else {
-                    NSLog(@"eglGetConfigAttrib() returned error %d", eglGetError());
-                }
-            }
-        } else {
-            NSLog(@"eglChooseConfig() returned error %d", eglGetError());
-        }
+
+    if (!eglChooseConfig(display, attribs, configs, sizeof(configs) / sizeof(EGLConfig), &numConfigs)) {
+        NSLog(@"eglChooseConfig() returned error %d", eglGetError());
+        return EGL_NO_CONTEXT;
     }
 
-    // Fallback to non-MSAA config if MSAA not requested or unavailable
-    if (*config == EGL_NO_CONTEXT) {
-        if (!eglChooseConfig(display, attribs, configs, sizeof(configs) / sizeof(EGLConfig), &numConfigs)) {
-            NSLog(@"eglChooseConfig() returned error %d", eglGetError());
-            return EGL_NO_CONTEXT;
-        }
-
-        for (EGLint i = 0; i < numConfigs; ++i) {
-            if (eglGetConfigAttrib(display, configs[i], EGL_NATIVE_VISUAL_ID, &format)) {
-                *config = configs[i];
-                break;
-            } else {
-                NSLog(@"eglGetConfigAttrib() returned error %d", eglGetError());
-            }
+    for (EGLint i = 0; i < numConfigs; ++i) {
+        if (eglGetConfigAttrib(display, configs[i], EGL_NATIVE_VISUAL_ID, &format)) {
+            *config = configs[i];
+            break;
+        } else {
+            NSLog(@"eglGetConfigAttrib() returned error %d", eglGetError());
         }
     }
 
@@ -721,30 +752,23 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
     _renderContext = [self createEGLContextWithDisplay:_display api:_internalAPI sharedContext:EGL_NO_CONTEXT config:&_renderConfig depthSize:24 msaa:&_msaaEnabled];
 
-    if (_msaaEnabled) {
-        EGLint numSamples;
-        if (eglGetConfigAttrib(_display, _renderConfig, EGL_SAMPLES, &numSamples) && numSamples > 1)
-            _sampleCount = (GLsizei)numSamples;
-    }
-
     if (_renderContext == EGL_NO_CONTEXT)
         return NO;
 
-    __block CGSize size;
-    __block EGLSurface renderSurface = EGL_NO_SURFACE;
-    dispatch_sync(dispatch_get_main_queue(), ^{
-        renderSurface = eglCreateWindowSurface(_display, _renderConfig, (__bridge EGLNativeWindowType)(_metalLayer), NULL);
-        size = self.frame.size;
-    });
-    _renderSurface = renderSurface;
-
-    if (_renderSurface == EGL_NO_SURFACE) {
-        NSLog(@"eglCreateWindowSurface() returned error %d", eglGetError());
+    // ANGLE supports EGL_KHR_surfaceless_context, so no EGLSurface is needed.
+    if (!eglMakeCurrent(_display, EGL_NO_SURFACE, EGL_NO_SURFACE, _renderContext)) {
+        NSLog(@"eglMakeCurrent() returned error %d", eglGetError());
         return NO;
     }
 
-    [self makeRenderContextCurrent];
-    eglSwapInterval(_display, 0);
+    if (_msaaEnabled) {
+        GLint numSamples = 0;
+        glGetIntegerv(GL_MAX_SAMPLES, &numSamples);
+        if (numSamples > 1)
+            _sampleCount = MIN(numSamples, 4);
+        else
+            _msaaEnabled = NO;
+    }
 
 #if DEBUG
     const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
@@ -761,7 +785,14 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
     }
 #endif
 
-    return [self setupGL:size];
+    __block CGSize size;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        CGSize frameSize = self.frame.size;
+        CGFloat scale = self.layer.contentsScale;
+        size = CGSizeMake(frameSize.width * scale, frameSize.height * scale);
+    });
+
+    return [self createRenderBuffers:size];
 #else
 #if !TARGET_OSX_OR_CATALYST
     _renderContext = [[EAGLContext alloc] initWithAPI:_mainContext.API sharegroup:_mainContext.sharegroup];
@@ -904,6 +935,331 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 #endif
 #endif
 
+#ifdef USE_EGL
+#pragma mark - MTLTexture / offscreen FBO
+
+- (BOOL)createRenderBuffers:(CGSize)size {
+    glGenFramebuffers(1, &_framebuffer);
+    glGenTextures(1, &_colorTexture);
+
+    if (_msaaEnabled) {
+        glGenFramebuffers(1, &_sampleFramebuffer);
+        glGenRenderbuffers(1, &_sampleColorbuffer);
+        glGenRenderbuffers(1, &_sampleDepthbuffer);
+    } else {
+        glGenRenderbuffers(1, &_depthBuffer);
+    }
+
+    return [self _updateEGLBuffersSize:size];
+}
+
+- (BOOL)_createMetalBackingForSize:(CGSize)size {
+    NSUInteger screenWidth = (NSUInteger)size.width;
+    NSUInteger screenHeight = (NSUInteger)size.height;
+
+    // Tear down any previously imported texture.
+    if (_colorEGLImage != EGL_NO_IMAGE_KHR) {
+        eglDestroyImageKHR(_display, _colorEGLImage);
+        _colorEGLImage = EGL_NO_IMAGE_KHR;
+    }
+    _colorMTLTexture = nil;
+    _rasterizationRateMap = nil;
+    _rasterizationRateMapParams = nil;
+    _rasterizationRateScreenSize   = MTLSizeMake(screenWidth, screenHeight, 0);
+    _rasterizationRatePhysicalSize = MTLSizeMake(screenWidth, screenHeight, 0);
+
+    // Build a foveated MTLRasterizationRateMap first so we can size the GL
+    // color/depth attachments at the *physical* (compressed) resolution that
+    // ANGLE will actually rasterize at.
+    if (@available(macOS 10.15.4, macCatalyst 13.4, iOS 13.0, *)) {
+        const NSUInteger zoneCount = 8;
+        if ([_metalDevice supportsRasterizationRateMapWithLayerCount:1]) {
+            MTLRasterizationRateLayerDescriptor *layer =
+                [[MTLRasterizationRateLayerDescriptor alloc] initWithSampleCount:MTLSizeMake(zoneCount, zoneCount, 1)];
+            // Bell-shaped rate profile, peaking at 1.0 in the center and
+            // falling to ~0.25 at the edges. Same profile horizontally and
+            // vertically.
+            for (NSUInteger i = 0; i < zoneCount; i++) {
+                double t = ((double)i + 0.5) / (double)zoneCount;
+                double d = (t - 0.5) * 2.0;
+                double rate = 1.0 - 0.75 * (d * d);
+                layer.horizontalSampleStorage[i] = (float)rate;
+                layer.verticalSampleStorage[i]   = (float)rate;
+            }
+
+            MTLRasterizationRateMapDescriptor *rateDesc =
+                [MTLRasterizationRateMapDescriptor rasterizationRateMapDescriptorWithScreenSize:MTLSizeMake(screenWidth, screenHeight, 0)
+                                                                                          layer:layer];
+            rateDesc.label = @"AsyncGL foveated rate map";
+
+            _rasterizationRateMap = [_metalDevice newRasterizationRateMapWithDescriptor:rateDesc];
+
+            if (_rasterizationRateMap != nil) {
+                _rasterizationRateScreenSize   = [_rasterizationRateMap screenSize];
+                _rasterizationRatePhysicalSize = [_rasterizationRateMap physicalSizeForLayer:0];
+
+                MTLSizeAndAlign paramSizeAlign = [_rasterizationRateMap parameterBufferSizeAndAlign];
+                _rasterizationRateMapParams =
+                    [_metalDevice newBufferWithLength:paramSizeAlign.size
+                                              options:MTLResourceStorageModeShared];
+                [_rasterizationRateMap copyParameterDataToBuffer:_rasterizationRateMapParams offset:0];
+            }
+        }
+    }
+
+    NSUInteger physicalWidth  = _rasterizationRatePhysicalSize.width;
+    NSUInteger physicalHeight = _rasterizationRatePhysicalSize.height;
+
+    // ANGLE's Metal backend renders GL_RGBA8 into MTLPixelFormatRGBA8Unorm.
+    // Use default usage/storage; overriding usage to MTLTextureUsageRenderTarget
+    // causes ANGLE to fall back to an internal RT. Size the texture at the
+    // rate-map physical resolution.
+    MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                    width:physicalWidth
+                                                                                   height:physicalHeight
+                                                                                mipmapped:NO];
+    _colorMTLTexture = [_metalDevice newTextureWithDescriptor:desc];
+    if (_colorMTLTexture == nil) {
+        NSLog(@"newTextureWithDescriptor: failed");
+        return NO;
+    }
+
+    // Import the MTLTexture into GL via EGL_ANGLE_metal_texture_client_buffer.
+    const EGLint imageAttribs[] = { EGL_NONE };
+    _colorEGLImage = eglCreateImageKHR(_display, EGL_NO_CONTEXT,
+                                       EGL_METAL_TEXTURE_ANGLE,
+                                       (__bridge EGLClientBuffer)_colorMTLTexture,
+                                       imageAttribs);
+    if (_colorEGLImage == EGL_NO_IMAGE_KHR) {
+        NSLog(@"eglCreateImageKHR() returned error %d", eglGetError());
+        return NO;
+    }
+
+    // Bind the EGLImage to a GL_TEXTURE_2D so it can be used as a color attachment.
+    static AsyncGLEGLImageTargetTexture2DOESProc imageTargetTexture2D = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        imageTargetTexture2D = (AsyncGLEGLImageTargetTexture2DOESProc)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    });
+    if (imageTargetTexture2D == NULL) {
+        NSLog(@"glEGLImageTargetTexture2DOES not available");
+        return NO;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, _colorTexture);
+    imageTargetTexture2D(GL_TEXTURE_2D, (GLeglImageOES)_colorEGLImage);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Bind the rate map to ANGLE so subsequent draws are foveated.
+    if (_rasterizationRateMap != nil) {
+        static AsyncGLBindMetalRasterizationRateMapANGLEProc bindRateMap = NULL;
+        static dispatch_once_t rateMapOnce;
+        dispatch_once(&rateMapOnce, ^{
+            bindRateMap = (AsyncGLBindMetalRasterizationRateMapANGLEProc)eglGetProcAddress("glBindMetalRasterizationRateMapANGLE");
+        });
+        if (bindRateMap != NULL) {
+            bindRateMap((__bridge void *)_rasterizationRateMap);
+            glEnable(GL_VARIABLE_RASTERIZATION_RATE_ANGLE);
+        } else {
+            glDisable(GL_VARIABLE_RASTERIZATION_RATE_ANGLE);
+        }
+    } else {
+        glDisable(GL_VARIABLE_RASTERIZATION_RATE_ANGLE);
+    }
+
+    return YES;
+}
+
+- (BOOL)_updateEGLBuffersSize:(CGSize)size {
+    if (CGSizeEqualToSize(_savedBufferSize, size))
+        return YES;
+
+    _savedBufferSize = size;
+
+    GLsizei screenWidth = (GLsizei)size.width;
+    GLsizei screenHeight = (GLsizei)size.height;
+
+    if (screenWidth <= 0 || screenHeight <= 0)
+        return YES;
+
+    if (![self _createMetalBackingForSize:size])
+        return NO;
+
+    // GL renders into the rate-map *physical* extents; the drawable still
+    // matches the screen (logical) size.
+    GLsizei width  = (GLsizei)_rasterizationRatePhysicalSize.width;
+    GLsizei height = (GLsizei)_rasterizationRatePhysicalSize.height;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _colorTexture, 0);
+
+    if (_msaaEnabled) {
+        glBindRenderbuffer(GL_RENDERBUFFER, _sampleColorbuffer);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, _sampleCount, GL_RGBA8, width, height);
+        glBindRenderbuffer(GL_RENDERBUFFER, _sampleDepthbuffer);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, _sampleCount, GL_DEPTH_COMPONENT24, width, height);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, _sampleFramebuffer);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, _sampleColorbuffer);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, _sampleDepthbuffer);
+
+        GLenum sampleStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (sampleStatus != GL_FRAMEBUFFER_COMPLETE) {
+            NSLog(@"sample framebuffer not complete %d", sampleStatus);
+            return NO;
+        }
+    } else {
+        glBindRenderbuffer(GL_RENDERBUFFER, _depthBuffer);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+        glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, _depthBuffer);
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        NSLog(@"framebuffer not complete %d", status);
+        return NO;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, _msaaEnabled ? _sampleFramebuffer : _framebuffer);
+
+    CGSize drawableSize = CGSizeMake(screenWidth, screenHeight);
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        self->_metalLayer.drawableSize = drawableSize;
+    });
+
+    if (!_contextsCreated)
+        return [self setupGL:size];
+    return YES;
+}
+
+- (BOOL)_ensurePresentPipelineForPixelFormat:(MTLPixelFormat)pixelFormat {
+    if (_presentPipeline != nil)
+        return YES;
+
+    // The fragment shader samples the ANGLE-rendered texture. ANGLE drew the
+    // image with the bound MTLRasterizationRateMap, so the pixels are laid out
+    // in *physical* (compressed) coordinates. To present, we walk the drawable
+    // in screen-space UV and use rasterization_rate_map_decoder to translate
+    // each screen-space coordinate to the corresponding physical sample.
+    // Reference: https://developer.apple.com/documentation/metal/scaling-variable-rasterization-rate-content
+    NSString *source = @"#include <metal_stdlib>\n"
+                       "using namespace metal;\n"
+                       "struct AGLOut { float4 position [[position]]; float2 uv; };\n"
+                       "struct AGLPresentParams {\n"
+                       "    float2 screenSize;\n"
+                       "    float2 physicalSize;\n"
+                       "    uint   useRateMap;\n"
+                       "};\n"
+                       "vertex AGLOut asyncgl_present_vs(uint vid [[vertex_id]]) {\n"
+                       "    float2 pos[4] = { float2(-1,-1), float2(1,-1), float2(-1,1), float2(1,1) };\n"
+                       "    float2 uv[4]  = { float2(0,0),   float2(1,0),  float2(0,1),  float2(1,1) };\n"
+                       "    AGLOut o;\n"
+                       "    o.position = float4(pos[vid], 0.0, 1.0);\n"
+                       "    o.uv = uv[vid];\n"
+                       "    return o;\n"
+                       "}\n"
+                       "fragment float4 asyncgl_present_fs(AGLOut in [[stage_in]],\n"
+                       "                                   texture2d<float> tex [[texture(0)]],\n"
+                       "                                   constant AGLPresentParams &params [[buffer(0)]],\n"
+                       "                                   constant rasterization_rate_map_data &rateData [[buffer(1)]]) {\n"
+                       "    constexpr sampler s(mag_filter::linear, min_filter::linear);\n"
+                       "    float2 sampleUV;\n"
+                       "    if (params.useRateMap != 0u) {\n"
+                       "        rasterization_rate_map_decoder decoder(rateData);\n"
+                       "        float2 screenCoord = in.uv * params.screenSize;\n"
+                       "        float2 physicalCoord = decoder.map_screen_to_physical_coordinates(screenCoord);\n"
+                       "        sampleUV = physicalCoord / params.physicalSize;\n"
+                       "    } else {\n"
+                       "        sampleUV = in.uv;\n"
+                       "    }\n"
+                       "    return tex.sample(s, sampleUV);\n"
+                       "}\n";
+
+    NSError *error = nil;
+    id<MTLLibrary> library = [_metalDevice newLibraryWithSource:source options:nil error:&error];
+    if (library == nil) {
+        NSLog(@"newLibraryWithSource failed: %@", error);
+        return NO;
+    }
+
+    MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = [library newFunctionWithName:@"asyncgl_present_vs"];
+    desc.fragmentFunction = [library newFunctionWithName:@"asyncgl_present_fs"];
+    desc.colorAttachments[0].pixelFormat = pixelFormat;
+
+    _presentPipeline = [_metalDevice newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (_presentPipeline == nil) {
+        NSLog(@"newRenderPipelineStateWithDescriptor failed: %@", error);
+        return NO;
+    }
+    return YES;
+}
+
+- (void)_presentToMetalLayer:(CGSize)size {
+    if (_colorMTLTexture == nil)
+        return;
+
+    // Ensure all GL/ANGLE writes to the imported MTLTexture are completed before
+    // Metal samples it on a different command queue.
+    glFlush();
+    glFinish();
+
+    id<CAMetalDrawable> drawable = [_metalLayer nextDrawable];
+    if (drawable == nil)
+        return;
+
+    if (![self _ensurePresentPipelineForPixelFormat:drawable.texture.pixelFormat])
+        return;
+
+    MTLRenderPassDescriptor *renderPass = [MTLRenderPassDescriptor renderPassDescriptor];
+    renderPass.colorAttachments[0].texture = drawable.texture;
+    renderPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    renderPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+    struct {
+        float screenSize[2];
+        float physicalSize[2];
+        uint32_t useRateMap;
+        uint32_t _pad[3];
+    } params = {0};
+
+    BOOL useRateMap = (_rasterizationRateMap != nil && _rasterizationRateMapParams != nil);
+    if (useRateMap) {
+        params.screenSize[0]   = (float)_rasterizationRateScreenSize.width;
+        params.screenSize[1]   = (float)_rasterizationRateScreenSize.height;
+        params.physicalSize[0] = (float)_rasterizationRatePhysicalSize.width;
+        params.physicalSize[1] = (float)_rasterizationRatePhysicalSize.height;
+        params.useRateMap = 1;
+    } else {
+        params.useRateMap = 0;
+    }
+
+    id<MTLCommandBuffer> commandBuffer = [_metalCommandQueue commandBuffer];
+    id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPass];
+    [encoder setRenderPipelineState:_presentPipeline];
+    [encoder setFragmentTexture:_colorMTLTexture atIndex:0];
+    [encoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
+    if (useRateMap) {
+        [encoder setFragmentBuffer:_rasterizationRateMapParams offset:0 atIndex:1];
+    } else {
+        // Bind a tiny placeholder so Metal's resource validation passes even
+        // though the shader skips reading rateData when useRateMap == 0.
+        uint8_t placeholder[16] = {0};
+        [encoder setFragmentBytes:placeholder length:sizeof(placeholder) atIndex:1];
+    }
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+    [encoder endEncoding];
+
+    [commandBuffer presentDrawable:drawable];
+    [commandBuffer commit];
+}
+#endif
+
 - (void)updateBuffersSize:(CGSize)size {
 #ifndef USE_EGL
     if (CGSizeEqualToSize(_savedBufferSize, size))
@@ -950,17 +1306,47 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
 - (void)_drawGL:(CGSize)size
 {
+#ifdef USE_EGL
+    [self _updateEGLBuffersSize:size];
+#else
     [self updateBuffersSize:size];
+#endif
 
-#if TARGET_OSX_OR_CATALYST || defined(USE_EGL)
-    [_delegate _drawGL:size];
+#ifdef USE_EGL
+    CGSize physicalSize = CGSizeMake((CGFloat)_rasterizationRatePhysicalSize.width,
+                                     (CGFloat)_rasterizationRatePhysicalSize.height);
+    if (physicalSize.width <= 0 || physicalSize.height <= 0)
+        physicalSize = size;
+#else
+    CGSize physicalSize = size;
+#endif
+
+#if TARGET_OSX_OR_CATALYST
+    [_delegate _drawGL:size physicalSize:physicalSize];
+#elif defined(USE_EGL)
+    if (_msaaEnabled) {
+        GLsizei width  = (GLsizei)_rasterizationRatePhysicalSize.width;
+        GLsizei height = (GLsizei)_rasterizationRatePhysicalSize.height;
+        glBindFramebuffer(GL_FRAMEBUFFER, _sampleFramebuffer);
+
+        [_delegate _drawGL:size physicalSize:physicalSize];
+
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, _sampleFramebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, _framebuffer);
+        glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        GLenum attachments[] = { GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT };
+        glInvalidateFramebuffer(GL_READ_FRAMEBUFFER, 2, attachments);
+    } else {
+        glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
+        [_delegate _drawGL:size physicalSize:physicalSize];
+    }
 #else
     if (_msaaEnabled) {
         GLsizei width = (GLsizei)size.width;
         GLsizei height = (GLsizei)size.height;
         glBindFramebuffer(GL_FRAMEBUFFER, _sampleFramebuffer);
 
-        [_delegate _drawGL:size];
+        [_delegate _drawGL:size physicalSize:physicalSize];
 
         glBindFramebuffer(GL_READ_FRAMEBUFFER, _sampleFramebuffer);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, _framebuffer);
@@ -974,7 +1360,7 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
             glInvalidateFramebuffer(GL_READ_FRAMEBUFFER, 2, attachments);
         }
     } else {
-        [_delegate _drawGL:size];
+        [_delegate _drawGL:size physicalSize:physicalSize];
     }
 #endif
 }
@@ -999,7 +1385,39 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 }
 
 - (void)clearResources {
-#ifndef USE_EGL
+#ifdef USE_EGL
+    if (_sampleFramebuffer != 0) {
+        glDeleteFramebuffers(1, &_sampleFramebuffer);
+        _sampleFramebuffer = 0;
+    }
+    if (_sampleColorbuffer != 0) {
+        glDeleteRenderbuffers(1, &_sampleColorbuffer);
+        _sampleColorbuffer = 0;
+    }
+    if (_sampleDepthbuffer != 0) {
+        glDeleteRenderbuffers(1, &_sampleDepthbuffer);
+        _sampleDepthbuffer = 0;
+    }
+    if (_depthBuffer != 0) {
+        glDeleteRenderbuffers(1, &_depthBuffer);
+        _depthBuffer = 0;
+    }
+    if (_framebuffer != 0) {
+        glDeleteFramebuffers(1, &_framebuffer);
+        _framebuffer = 0;
+    }
+    if (_colorTexture != 0) {
+        glDeleteTextures(1, &_colorTexture);
+        _colorTexture = 0;
+    }
+    if (_colorEGLImage != EGL_NO_IMAGE_KHR) {
+        eglDestroyImageKHR(_display, _colorEGLImage);
+        _colorEGLImage = EGL_NO_IMAGE_KHR;
+    }
+    _colorMTLTexture = nil;
+    _rasterizationRateMap = nil;
+    _rasterizationRateMapParams = nil;
+#else
     if (_depthBuffer != 0) {
         glDeleteRenderbuffers(1, &_depthBuffer);
         _depthBuffer = 0;
@@ -1054,11 +1472,6 @@ static void GL_APIENTRY AsyncGLKHRDebugCallback(GLenum source,
 
 - (void)destroyRenderContext {
 #ifdef USE_EGL
-    if (_renderSurface != EGL_NO_SURFACE) {
-        eglDestroySurface(_display, _renderSurface);
-        _renderSurface = EGL_NO_SURFACE;
-    }
-
     if (_renderContext != EGL_NO_CONTEXT) {
         eglMakeCurrent(_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         eglDestroyContext(_display, _renderContext);

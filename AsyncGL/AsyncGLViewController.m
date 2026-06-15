@@ -165,9 +165,9 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     return YES;
 }
 
-- (void)_drawGL:(CGSize)size
+- (void)_drawGL:(CGSize)size physicalSize:(CGSize)physicalSize
 {
-    [self drawGL:size];
+    [self drawGL:size physicalSize:physicalSize];
 }
 
 - (void)_clearGL
@@ -198,7 +198,7 @@ static CVReturn displayCallback(CVDisplayLinkRef displayLink,
     return YES;
 }
 
-- (void)drawGL:(CGSize)rect
+- (void)drawGL:(CGSize)rect physicalSize:(CGSize)physicalSize
 {
     [NSException raise:NSInternalInconsistencyException format:@"You must override %@ in a subclass", NSStringFromSelector(_cmd)];
 }
